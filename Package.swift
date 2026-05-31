@@ -1,21 +1,53 @@
-// swift-tools-version: 6.1
+// swift-tools-version: 5.9
 // The swift-tools-version declares the minimum version of Swift required to build this package.
 
 import PackageDescription
 
 let package = Package(
-    name: "EarleyTableParser",
+    name: "Earley-TableParser",
+    platforms: [
+        .macOS(.v11),
+        .iOS(.v14),
+    ],
+    products: [
+        .library(name: "Earley-TableParser", targets: ["Earley-TableParser"]),
+    ],
     dependencies: [
-        .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.2.0"),
+        .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.6.2"),
+        .package(url: "https://github.com/JohnSundell/ShellOut.git", from: "2.0.0"),
+        .package(url: "https://github.com/hakkabon/Grammar.git", branch: "main"),
+        .package(url: "https://github.com/hakkabon/GrammarTokenizer.git", branch: "main"),
+        .package(url: "https://github.com/hakkabon/GrammarDiagram.git", branch: "main"),
+        .package(url: "https://github.com/hakkabon/TerminalColors.git", from: "0.0.1"),
     ],
     targets: [
-        // Targets are the basic building blocks of a package, defining a module or a test suite.
-        // Targets can depend on other targets in this package and products from dependencies.
-        .executableTarget(
-            name: "EarleyTableParser",
+        .target(
+            name: "Earley-TableParser",
             dependencies: [
-                .product(name: "ArgumentParser", package: "swift-argument-parser"),
+                .product(name: "Grammar", package: "Grammar"),
+                .product(name: "Tokenizer", package: "GrammarTokenizer"),
+                .product(name: "GrammarDiagram", package: "GrammarDiagram"),
+                .product(name: "TerminalColors", package: "TerminalColors"),
             ]
+        ),
+        .testTarget(
+            name: "Earley-TableParserTests",
+            dependencies: [
+                "Earley-TableParser",
+                .product(name: "Grammar", package: "Grammar"),
+            ]
+        ),
+        // Move executable target to its destination (grammar toolbox) when library confirmed working.
+        .executableTarget(
+            name: "gtool",
+            dependencies: [
+                "Earley-TableParser",
+                .product(name: "ArgumentParser", package: "swift-argument-parser"),
+                .product(name: "ArgumentParser", package: "swift-argument-parser"),
+                .product(name: "ShellOut", package: "shellout"),
+                .product(name: "Grammar", package: "Grammar"),
+                .product(name: "GrammarDiagram", package: "GrammarDiagram"),
+            ],
         ),
     ]
 )
