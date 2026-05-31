@@ -5,7 +5,7 @@
 // MARK: - Grammar Symbols
 
 /// A grammar symbol: either a terminal, nonterminal, or ε.
-public enum Symbol: Hashable, CustomStringConvertible {
+public enum Symbol: Hashable, Codable, CustomStringConvertible {
     case terminal(String)
     case nonterminal(String)
     case epsilon

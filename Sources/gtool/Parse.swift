@@ -39,7 +39,7 @@ extension GrammarTool {
                 try Grammar(bnf: try String(contentsOf: options.grammar), start: options.start)
             }
             
-            let parser: GeneralizedParser = EarleyTableParser(grammar: grammar)
+//            let parser: GeneralizedParser = EarleyTableParser(grammar: grammar)
             
             switch input {
             case .arg(let inputString): // String input
@@ -56,23 +56,23 @@ extension GrammarTool {
 //                    try shellOut(to: ["echo '\(dotfile)' | dot -Tpdf > parse-tree.pdf", "open parse-tree.pdf"])
 //                    
 //                case .sppf:
-                    let result = try parser.parse(inputString)
-                    if result.isSuccessful {
-                        print("Parse successful!")
-                        print("Has ambiguity: \(result.hasAmbiguity)")
-                        result.bsr.log()
-                        for entry in result.bsr.sorted() {
-                            print("  \(entry)")
-                        }
-                        if let graph = result.sppfGraph {
-                            graph.log()
-                            graph.printGraph()
-                            let dotfile = graph.graphviz
-                            try shellOut(to: ["echo '\(dotfile)' | dot -Tpdf > sppf.pdf", "open sppf.pdf"])
-                        }
-                    } else {
-                        print("Parse failed!")
-                    }
+//                    let result = try parser.parse(inputString)
+//                    if result.isSuccessful {
+//                        print("Parse successful!")
+//                        print("Has ambiguity: \(result.hasAmbiguity)")
+//                        result.bsr.log()
+//                        for entry in result.bsr.sorted() {
+//                            print("  \(entry)")
+//                        }
+//                        if let graph = result.sppfGraph {
+//                            graph.log()
+//                            graph.printGraph()
+//                            let dotfile = graph.graphviz
+//                            try shellOut(to: ["echo '\(dotfile)' | dot -Tpdf > sppf.pdf", "open sppf.pdf"])
+//                        }
+//                    } else {
+//                        print("Parse failed!")
+//                    }
 
                 case .url(let url): // File input
                     let content = try String(contentsOf: url)
@@ -88,24 +88,24 @@ extension GrammarTool {
 //                        try shellOut(to: ["echo '\(dotfile)' | dot -Tpdf > parse-tree.pdf", "open parse-tree.pdf"])
 //                        
 //                    case .sppf:
-                        let result = try parser.parse(try String(contentsOf: url))
-                        
-                        if result.isSuccessful {
-                            print("Parse successful!")
-                            print("Has ambiguity: \(result.hasAmbiguity)")
-                            result.bsr.log()
-                            for entry in result.bsr.sorted() {
-                                print("  \(entry)")
-                            }
-                            if let graph = result.sppfGraph {
-                                graph.log()
-                                graph.printGraph()
-                                let dotfile = graph.graphviz
-                                try shellOut(to: ["echo '\(dotfile)' | dot -Tpdf > sppf.pdf", "open sppf.pdf"])
-                            }
-                        } else {
-                            print("Parse failed!")
-                        }
+//                        let result = try parser.parse(try String(contentsOf: url))
+//                        
+//                        if result.isSuccessful {
+//                            print("Parse successful!")
+//                            print("Has ambiguity: \(result.hasAmbiguity)")
+//                            result.bsr.log()
+//                            for entry in result.bsr.sorted() {
+//                                print("  \(entry)")
+//                            }
+//                            if let graph = result.sppfGraph {
+//                                graph.log()
+//                                graph.printGraph()
+//                                let dotfile = graph.graphviz
+//                                try shellOut(to: ["echo '\(dotfile)' | dot -Tpdf > sppf.pdf", "open sppf.pdf"])
+//                            }
+//                        } else {
+//                            print("Parse failed!")
+//                        }
 //                    }
 //                }
             }

@@ -43,10 +43,20 @@ let package = Package(
             dependencies: [
                 "Earley-TableParser",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
-                .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(name: "ShellOut", package: "shellout"),
                 .product(name: "Grammar", package: "Grammar"),
                 .product(name: "GrammarDiagram", package: "GrammarDiagram"),
+            ],
+        ),
+        .executableTarget(
+            name: "demo",
+            dependencies: [
+                "Earley-TableParser",
+                .product(name: "ArgumentParser", package: "swift-argument-parser"),
+                .product(name: "Grammar", package: "Grammar"),
+                .product(name: "Tokenizer", package: "GrammarTokenizer"),
+                .product(name: "GrammarDiagram", package: "GrammarDiagram"),
+                .product(name: "TerminalColors", package: "TerminalColors"),
             ],
         ),
     ]
