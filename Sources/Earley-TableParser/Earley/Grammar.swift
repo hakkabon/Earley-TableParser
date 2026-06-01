@@ -1,242 +1,213 @@
 // Grammar.swift
-// Represents context-free grammars, grammar slots (LR items), and
-// the basic sets used throughout Scott & Johnstone (2025).
+// Extensions for the external Grammar package used in NFA and parser table construction.
 
-// MARK: - Grammar Symbols
+import Foundation
+import Grammar
 
-/// A grammar symbol: either a terminal, nonterminal, or ε.
-public enum Symbol: Hashable, Codable, CustomStringConvertible {
-    case terminal(String)
-    case nonterminal(String)
-    case epsilon
+// MARK: - Grammar Extensions
 
-    public var description: String {
-        switch self {
-        case .terminal(let s):    return s
-        case .nonterminal(let s): return s
-        case .epsilon:            return "ε"
-        }
-    }
-
-    public var isTerminal:    Bool { if case .terminal    = self { return true }; return false }
-    public var isNonterminal: Bool { if case .nonterminal = self { return true }; return false }
-    public var isEpsilon:     Bool { if case .epsilon     = self { return true }; return false }
-
-    public var name: String? {
-        switch self {
-        case .terminal(let s), .nonterminal(let s): return s
-        case .epsilon: return nil
-        }
-    }
-}
-
-// MARK: - Production
-
-/// A single production rule:  lhs ::= rhs₀ rhs₁ … rhs_{n-1}
-/// An empty rhs represents an ε-production.
-public struct Production: Hashable, CustomStringConvertible {
-    public let lhs: String          // left-hand nonterminal name
-    public let rhs: [Symbol]        // right-hand side (may be empty for ε)
-    public let id:  Int             // unique index assigned by Grammar
-
-    public var description: String {
-        let r = rhs.isEmpty ? "ε" : rhs.map(\.description).joined(separator: " ")
-        return "\(lhs) ::= \(r)"
-    }
-}
-
-// MARK: - Grammar
-
-/// A context-free grammar with a designated start nonterminal.
-public struct Grammar {
-    public let startSymbol:   String
-    public let productions:   [Production]
-    public let nonterminals:  Set<String>
-    public let terminals:     Set<String>
-
-    /// All slots across all productions.
-    public let allSlots: [Slot]
-
-    /// Quick lookup: slots whose lhs is a given nonterminal.
-    public let slotsByLHS: [String: [Slot]]
-
-    public init(startSymbol: String, rules: [(lhs: String, rhs: [Symbol])]) {
-        self.startSymbol = startSymbol
-
-        var prods: [Production] = []
-        var nonterms: Set<String> = []
-        var terms: Set<String> = []
-
-        for (idx, (lhs, rhs)) in rules.enumerated() {
-            prods.append(Production(lhs: lhs, rhs: rhs, id: idx))
-            nonterms.insert(lhs)
-            for sym in rhs {
-                if case .nonterminal(let n) = sym { nonterms.insert(n) }
-                if case .terminal(let t)    = sym { terms.insert(t) }
+extension Grammar {
+    
+    /// Check if a nonterminal can derive ε
+    public func isNullableNonterminal(_ name: String) -> Bool {
+        var nullable = Set<String>()
+        var changed = true
+        
+        while changed {
+            changed = false
+            for rule in productions {
+                let ntName = rule.lhs.name
+                if nullable.contains(ntName) { continue }
+                
+                let allNull = rule.rhs.allSatisfy { sym in
+                    switch sym {
+                    case .terminal:
+                        return false
+                    case .nonTerminal(let nt):
+                        return nullable.contains(nt.name)
+                    case .metaSymbol:
+                        return false
+                    }
+                }
+                
+                if allNull {
+                    nullable.insert(ntName)
+                    changed = true
+                }
             }
         }
-
-        self.productions  = prods
-        self.nonterminals = nonterms
-        self.terminals    = terms
-
-        var slots: [Slot] = []
-        var byLHS: [String: [Slot]] = [:]
-        for prod in prods {
-            for dot in 0...prod.rhs.count {
-                let s = Slot(production: prod, dot: dot)
-                slots.append(s)
-                byLHS[prod.lhs, default: []].append(s)
+        
+        return nullable.contains(name)
+    }
+    
+    /// Check if a sequence of symbols can derive ε
+    public func isNullable(_ symbols: [Symbol]) -> Bool {
+        symbols.allSatisfy { symbol in
+            switch symbol {
+            case .terminal:
+                return false
+            case .nonTerminal(let nt):
+                return isNullableNonterminal(nt.name)
+            case .metaSymbol:
+                return false
             }
         }
-        self.allSlots    = slots
-        self.slotsByLHS  = byLHS
     }
-
-    /// All initial slots  X ::= · γ  for productions with the given lhs.
-    public func initialSlots(for lhs: String) -> [Slot] {
-        productions
-            .filter { $0.lhs == lhs }
-            .map    { Slot(production: $0, dot: 0) }
-    }
-
-    /// The FIRST set of a sequence of symbols (used in nullable computation).
-    /// Returns nil if the sequence can derive ε; otherwise the set of leading terminals.
+    
+    /// Compute FIRST set of a symbol sequence
     public func first(of symbols: [Symbol]) -> (terminals: Set<String>, nullable: Bool) {
         var result = Set<String>()
-        for sym in symbols {
-            switch sym {
-            case .epsilon:
-                continue
-            case .terminal(let t):
-                result.insert(t)
+        
+        for symbol in symbols {
+            switch symbol {
+            case .terminal(let term):
+                result.insert(term.description)
                 return (result, false)
-            case .nonterminal(let n):
-                let (f, canBeNull) = firstOfNonterminal(n)
-                result.formUnion(f)
-                if !canBeNull { return (result, false) }
+            case .nonTerminal(let nt):
+                let (firstSet, nullable) = firstOfNonterminal(nt.name)
+                result.formUnion(firstSet)
+                if !nullable { return (result, false) }
+            case .metaSymbol(let meta):
+                result.insert(meta)
+                return (result, false)
             }
         }
+        
         return (result, true)
     }
-
-    // Memoised nullable / FIRST computation.
-    private func firstOfNonterminal(_ n: String) -> (Set<String>, Bool) {
-        // Simple fixed-point (good enough for moderate grammars).
+    
+    /// Compute FIRST set of a nonterminal
+    private func firstOfNonterminal(_ name: String) -> (Set<String>, Bool) {
+        var firstSets: [String: Set<String>] = [:]
         var nullable = Set<String>()
+        
+        // Compute nullable nonterminals first
         var changed = true
         while changed {
             changed = false
-            for prod in productions where !nullable.contains(prod.lhs) {
-                let allNull = prod.rhs.allSatisfy {
-                    switch $0 {
-                    case .epsilon: return true
-                    case .nonterminal(let x): return nullable.contains(x)
-                    case .terminal: return false
+            for rule in productions {
+                let lhsName = rule.lhs.name
+                if nullable.contains(lhsName) { continue }
+                
+                let allNull = rule.rhs.allSatisfy { sym in
+                    switch sym {
+                    case .terminal:
+                        return false
+                    case .nonTerminal(let nt):
+                        return nullable.contains(nt.name)
+                    case .metaSymbol:
+                        return false
                     }
                 }
-                if allNull { nullable.insert(prod.lhs); changed = true }
+                
+                if allNull {
+                    nullable.insert(lhsName)
+                    changed = true
+                }
             }
         }
-        var firstSets: [String: Set<String>] = [:]
+        
+        // Compute FIRST sets
         changed = true
         while changed {
             changed = false
-            for prod in productions {
-                for sym in prod.rhs {
+            for rule in productions {
+                let lhsName = rule.lhs.name
+                
+                for sym in rule.rhs {
                     switch sym {
-                    case .epsilon: continue
-                    case .terminal(let t):
-                        if firstSets[prod.lhs, default: []].insert(t).inserted { changed = true }
-                        break
-                    case .nonterminal(let x):
-                        let add = firstSets[x, default: []]
-                        for t in add {
-                            if firstSets[prod.lhs, default: []].insert(t).inserted { changed = true }
+                    case .terminal(let term):
+                        if firstSets[lhsName, default: []].insert(term.description).inserted {
+                            changed = true
                         }
-                        if !nullable.contains(x) { break }
+                        break
+                    case .nonTerminal(let nt):
+                        let ntName = nt.name
+                        let symbolFirst = firstSets[ntName, default: []]
+                        for term in symbolFirst {
+                            if firstSets[lhsName, default: []].insert(term).inserted {
+                                changed = true
+                            }
+                        }
+                        if !nullable.contains(ntName) { break }
+                    case .metaSymbol(let meta):
+                        if firstSets[lhsName, default: []].insert(meta).inserted {
+                            changed = true
+                        }
+                        break
                     }
                 }
             }
         }
-        return (firstSets[n, default: []], nullable.contains(n))
+        
+        return (firstSets[name, default: []], nullable.contains(name))
     }
-
-    /// Compute FOLLOW sets for all nonterminals.
-    /// FOLLOW(X) = { t ∈ T | S →* αXtβ for some α,β }
+    
+    /// Compute FOLLOW sets for all nonterminals
     public func followSets() -> [String: Set<String>] {
-        var nullable = Set<String>()
-        var firstSets: [String: Set<String>] = [:]
-
-        // Fixed-point nullable
+        var follow: [String: Set<String>] = [:]
+        follow[startSymbol.name] = ["$"]
+        
         var changed = true
         while changed {
             changed = false
-            for prod in productions where !nullable.contains(prod.lhs) {
-                let allNull = prod.rhs.allSatisfy {
-                    switch $0 {
-                    case .epsilon: return true
-                    case .nonterminal(let x): return nullable.contains(x)
-                    case .terminal: return false
-                    }
-                }
-                if allNull { nullable.insert(prod.lhs); changed = true }
-            }
-        }
-
-        // Fixed-point FIRST
-        changed = true
-        while changed {
-            changed = false
-            for prod in productions {
-                for sym in prod.rhs {
-                    switch sym {
-                    case .epsilon: continue
-                    case .terminal(let t):
-                        if firstSets[prod.lhs, default: []].insert(t).inserted { changed = true }
-                        break
-                    case .nonterminal(let x):
-                        for t in firstSets[x, default: []] {
-                            if firstSets[prod.lhs, default: []].insert(t).inserted { changed = true }
+            
+            for rule in productions {
+                let lhs = rule.lhs.name
+                
+                for (i, sym) in rule.rhs.enumerated() {
+                    guard case .nonTerminal(let nt) = sym else { continue }
+                    let ntName = nt.name
+                    
+                    let symbolsAfter = Array(rule.rhs.dropFirst(i + 1))
+                    let (firstSet, canBeNull) = first(of: symbolsAfter)
+                    
+                    for term in firstSet {
+                        if follow[ntName, default: []].insert(term).inserted {
+                            changed = true
                         }
-                        if !nullable.contains(x) { break }
                     }
-                }
-            }
-        }
-
-        // FOLLOW fixed-point
-        var follow: [String: Set<String>] = [:]
-        follow[startSymbol, default: []].insert("$")
-        changed = true
-        while changed {
-            changed = false
-            for prod in productions {
-                for (i, sym) in prod.rhs.enumerated() {
-                    guard case .nonterminal(let B) = sym else { continue }
-                    let beta = Array(prod.rhs[(i+1)...])
-                    let (firstBeta, betaNullable) = first(of: beta)
-                    for t in firstBeta {
-                        if follow[B, default: []].insert(t).inserted { changed = true }
-                    }
-                    if betaNullable {
-                        for t in follow[prod.lhs, default: []] {
-                            if follow[B, default: []].insert(t).inserted { changed = true }
+                    
+                    if canBeNull {
+                        if let followOfLhs = follow[lhs] {
+                            for term in followOfLhs {
+                                if follow[ntName, default: []].insert(term).inserted {
+                                    changed = true
+                                }
+                            }
                         }
                     }
                 }
             }
         }
+        
         return follow
     }
-
-    /// True if a string of symbols can derive ε.
-    public func isNullable(_ symbols: [Symbol]) -> Bool {
-        first(of: symbols).nullable
+    
+    /// Get all terminal symbols used in the grammar
+    public var terminals: Set<String> {
+        var result = Set<String>()
+        for rule in productions {
+            for sym in rule.rhs {
+                switch sym {
+                case .terminal(let term):
+                    result.insert(term.description)
+                case .nonTerminal:
+                    break
+                case .metaSymbol(let meta):
+                    result.insert(meta)
+                }
+            }
+        }
+        return result
     }
-
-    /// True if a single nonterminal can derive ε.
-    public func isNullableNonterminal(_ name: String) -> Bool {
-        isNullable([.nonterminal(name)])
+    
+    /// Get all nonterminal symbols used in the grammar
+    public var nonterminals: Set<String> {
+        var result = Set<String>()
+        for rule in productions {
+            result.insert(rule.lhs.name)
+        }
+        return result
     }
 }

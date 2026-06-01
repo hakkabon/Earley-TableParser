@@ -1,0 +1,44 @@
+{
+    "configurations": [
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:Earley-TableParser}",
+            "name": "Debug gtool",
+            "target": "gtool",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug gtool"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:Earley-TableParser}",
+            "name": "Release gtool",
+            "target": "gtool",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release gtool"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:Earley-TableParser}",
+            "name": "Debug demo",
+            "target": "demo",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug demo"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:Earley-TableParser}",
+            "name": "Release demo",
+            "target": "demo",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release demo"
+        }
+    ]
+}

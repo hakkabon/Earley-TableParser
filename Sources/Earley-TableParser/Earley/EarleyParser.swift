@@ -10,25 +10,35 @@
 // individual parse trees or construct an SPPF.
 
 import Foundation
+import Grammar
 
 // MARK: - Parser Result
 
-public struct ParseResult {
+public struct EarleyParseResult {
     /// Whether the input is in the language.
     public let accepted: Bool
     /// The BSR set Υ representing all parse derivations.
     public let bsrSet:   Set<BSRElement>
     /// The Earley sets 𝔼_j (each contains (state, backIndex) pairs).
     public let earleySets: [Set<EarleyPair>]
+    /// The SPPF graph constructed from BSR elements.
+    public let sppfGraph: SPPFGraph?
+    
+    public var hasAmbiguity: Bool {
+        guard let graph = sppfGraph else { return false }
+        return graph.getAllNodes().contains { node in
+            graph.getChildren(of: node).count > 1
+        }
+    }
 }
 
 // MARK: - simpleET()
 
 /// The simple lookahead Earley table parser (Section 7.1.1).
 ///
-/// Takes an SL parse table and a token sequence and returns a ParseResult
+/// Takes an SL parse table and a token sequence and returns a EarleyParseResult
 /// containing the BSR set Υ and the Earley sets.
-public func simpleET(table: SLParseTable, input tokens: [String]) -> ParseResult {
+public func simpleET(table: SLParseTable, input tokens: [String]) -> EarleyParseResult {
     let n = tokens.count
 
     // a[j] for j in 1...n is tokens[j-1]; a[n+1] = "$"
@@ -116,7 +126,7 @@ public func simpleET(table: SLParseTable, input tokens: [String]) -> ParseResult
         })
     })
 
-    return ParseResult(accepted: accepted, bsrSet: Upsilon, earleySets: E)
+    return EarleyParseResult(accepted: accepted, bsrSet: Upsilon, earleySets: E, sppfGraph: nil)
 }
 
 // MARK: - BSR Walker (derivation extraction)

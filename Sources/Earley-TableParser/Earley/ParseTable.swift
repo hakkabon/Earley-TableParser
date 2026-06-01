@@ -17,6 +17,7 @@
 //   χ₂ = em(G_p, x) = set of BSR components for ε-related nullable matches
 
 import Foundation
+import Grammar
 
 // MARK: - BSR Grammar Component (Ω)
 

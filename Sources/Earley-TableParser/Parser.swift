@@ -9,44 +9,6 @@
 import Foundation
 import Grammar
 
-#if false
-
-/// The outcome of a parse attempt.
-public enum ParseResult {
-    /// Parse succeeded; the BSR set and SPPF graph are available.
-    case success(bsr: BSRSet, sppf: SPPFGraph)
-    /// Parse failed; `position` is the furthest token that was consumed.
-    case failure(position: Int, message: String)
-
-    public var hasAmbiguity: Bool {
-        switch self {
-        case let .success(s,graph):
-            return graph.getAllNodes().contains { node in
-                graph.getChildren(of: node).count > 1
-            }
-        default: return false
-        }
-    }
-}
-
-#endif
-
-public struct ParseResult {
-    public let isSuccessful: Bool
-    public let bsr: Set<BinarySubtreeRepresentation>
-    public let sppfGraph: SPPFGraph?
-    
-    public var hasAmbiguity: Bool {
-        guard let graph = sppfGraph else { return false }
-        
-        // Check if any node has multiple children (multiple derivations)
-        return graph.getAllNodes().contains { node in
-            graph.getChildren(of: node).count > 1
-        }
-    }
-}
-
-
 /// A parser that can parse ambiguous grammars and retrieve every possible syntax tree
 public protocol GeneralizedParser {
     /// Generates all syntax trees explaining how a word can be derived from a grammar.
@@ -59,7 +21,7 @@ public protocol GeneralizedParser {
     /// - Parameter string: Input word, for which all parse trees should be generated
     /// - Returns: All syntax trees which explain how the input was derived from the recognized grammar
     /// - Throws: A syntax error if the word is not in the language recognized by the parser
-    func parse(_ string: String) throws -> ParseResult
+    func parse(_ string: String) throws -> EarleyParseResult
 }
 
 /// Deprecated alias kept for source compatibility.

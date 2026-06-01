@@ -8,6 +8,7 @@
 //      and x ∈ FOLLOW(Y)  — the SLR(1)-style lookahead set for completers.
 
 import Foundation
+import Grammar
 
 // MARK: - Recogniser Table Entry
 
