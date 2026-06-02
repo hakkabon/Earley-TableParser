@@ -12,6 +12,7 @@
 // States are indexed G₀, G₁, … G_q once enumerated.
 
 import Foundation
+import Grammar
 
 // MARK: - Entailment & calls()
 
@@ -26,10 +27,10 @@ func calls(_ M: Set<Slot>, grammar: Grammar) -> Set<Slot> {
     // LNcall(X) = all slots  X ::= ω·γ  where  ω ⟹* ε
     func lnCallSlots(for name: String) -> Set<Slot> {
         var result = Set<Slot>()
-        for prod in grammar.productions where prod.lhs == name {
+        for prod in grammar.productions where prod.goal.name == name {
             // Walk dot positions: add slot X ::= ω·γ when all of ω is nullable.
-            for dot in 0...prod.rhs.count {
-                let prefix = Array(prod.rhs[..<dot])
+            for dot in 0...prod.rule.count {
+                let prefix = Array(prod.rule[..<dot])
                 if grammar.isNullable(prefix) {
                     result.insert(Slot(production: prod, dot: dot))
                 } else {
@@ -46,9 +47,9 @@ func calls(_ M: Set<Slot>, grammar: Grammar) -> Set<Slot> {
     while let slot = worklist.popLast() {
         // For each slot with a nonterminal after the dot, add its LNcall slots.
         guard let next = slot.nextSymbol,
-              case .nonterminal(let name) = next else { continue }
+              case .nonTerminal(let nt) = next else { continue }
 
-        for newSlot in lnCallSlots(for: name) {
+        for newSlot in lnCallSlots(for: nt.name) {
             if result.insert(newSlot).inserted {
                 worklist.append(newSlot)
             }
@@ -63,7 +64,7 @@ func calls(_ M: Set<Slot>, grammar: Grammar) -> Set<Slot> {
 ///
 /// "core" = M is non-empty and does not contain any slot of the form X ::= ·γ
 func move(_ M: Set<Slot>, symbol x: Symbol, grammar: Grammar) -> Set<Slot> {
-    if case .epsilon = x {
+    if case .terminal(.meta(.eps)) = x {
         let isCore = !M.isEmpty && !M.contains(where: { $0.dot == 0 })
         return isCore ? calls(M, grammar: grammar) : []
     }
@@ -125,7 +126,7 @@ public struct EarleyNFA {
     /// The set of nonterminals X such that G_p contains X ::= γ· (complete slots).
     /// Used for completer actions in recET().
     public func completedNonterminals(in p: Int) -> Set<String> {
-        Set(states[p].filter(\.isComplete).map(\.production.lhs))
+        Set(states[p].filter(\.isComplete).map(\.production.goal.name))
     }
 }
 
@@ -139,7 +140,7 @@ public func buildEarleyNFA(grammar: Grammar) -> EarleyNFA {
     // In practice calls() over S_LNcall gives G₀.
     let startSlots: Set<Slot> = Set(
         grammar.productions
-            .filter { $0.lhs == grammar.startSymbol }
+            .filter { $0.goal == grammar.start }
             .map    { Slot(production: $0, dot: 0) }
     )
     let g0 = calls(startSlots, grammar: grammar)
@@ -153,7 +154,7 @@ public func buildEarleyNFA(grammar: Grammar) -> EarleyNFA {
     for s in grammar.allSlots {
         if let next = s.nextSymbol { symbolSet.insert(next) }
     }
-    symbolSet.insert(.epsilon)
+    symbolSet.insert(.terminal(.meta(.eps)))
     let alphabet = Array(symbolSet)
 
     // Trans[symbol][state] = target state index (optional Int, nil = ⊥)

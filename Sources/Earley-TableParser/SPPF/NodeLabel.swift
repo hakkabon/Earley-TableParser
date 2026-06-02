@@ -11,7 +11,7 @@ import Grammar
 
 public struct NodeLabel: Codable {
     public let goal: NonTerminal
-    public let symbols: [Grammar.Symbol]
+    public let symbols: [Symbol]
     public let position: Int
         
     var isCompleted: Bool {
@@ -31,7 +31,7 @@ public struct NodeLabel: Codable {
         }
     }
     
-    var split: (alpha: [Grammar.Symbol], delta: [Grammar.Symbol], dotPosition: Int) {
+    var split: (alpha: [Symbol], delta: [Symbol], dotPosition: Int) {
         let production = symbols
         let alpha = Array(production.prefix(position))
         let delta = Array(production.dropFirst(position))
@@ -91,9 +91,9 @@ extension NodeLabel {
                 return "\(stripped.replacingOccurrences(of: "\n", with: "\\n"))"
             }
         }.enumerated().reduce("") { (partialResult, string) in
-//            if string.offset == position {
-//                return partialResult.appending(" • \(string.element)")
-//            }
+            if string.offset == position {
+                return partialResult.appending(" • \(string.element)")
+            }
             return partialResult.appending(" \(string.element)")
         }
         return "\(goal) ::= \(label)"

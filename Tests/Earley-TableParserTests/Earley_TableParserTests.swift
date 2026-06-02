@@ -1,82 +1,53 @@
-//
-//  Earley_TableParserTests.swift
-//  Earley-TableParser
-//
-//  Comprehensive test suite for the Earley Table Traversing Parser
-//  Tests cover recognition, parsing, ambiguity detection, and SPPF generation
-//
-
 import Testing
 @testable import Earley_TableParser
+import Foundation
 import Grammar
 
-// MARK: - Test Setup Helpers
-
-/// Helper to create a simple test grammar
 func createSimpleGrammar() -> Grammar {
-    let rules: [(NonTerminal, [Grammar.Symbol])] = [
-        // S ::= a S b | a
-        (
-            NonTerminal(name: "S"),
-            [
-                .terminal(Terminal(description: "a")),
-                .nonTerminal(NonTerminal(name: "S")),
-                .terminal(Terminal(description: "b"))
-            ]
-        ),
-        (NonTerminal(name: "S"), [.terminal(Terminal(description: "a"))])
+    // S ::= a S b | a
+    let S = Symbol.nonTerminal("S")
+    let a = Symbol.terminal("a")
+    let b = Symbol.terminal("b")
+
+    let productions = [
+        Production(goal: NonTerminal("S"), rule: [a, S, b]),
+        Production(goal: NonTerminal("S"), rule: [a]),
     ]
-    return try! Grammar(startSymbol: NonTerminal(name: "S"), productions: rules)
+    return Grammar(productions: productions, start: NonTerminal("S"), lexicalTokens: [:])
 }
 
-/// Helper to create an ambiguous grammar
 func createAmbiguousGrammar() -> Grammar {
-    let rules: [(NonTerminal, [Grammar.Symbol])] = [
-        // S ::= S S S | S S | b
-        (
-            NonTerminal(name: "S"),
-            [
-                .nonTerminal(NonTerminal(name: "S")),
-                .nonTerminal(NonTerminal(name: "S")),
-                .nonTerminal(NonTerminal(name: "S"))
-            ]
-        ),
-        (
-            NonTerminal(name: "S"),
-            [
-                .nonTerminal(NonTerminal(name: "S")),
-                .nonTerminal(NonTerminal(name: "S"))
-            ]
-        ),
-        (NonTerminal(name: "S"), [.terminal(Terminal(description: "b"))])
+    // S ::= S S S | S S | b
+    let S = Symbol.nonTerminal("S")
+    let b = Symbol.terminal("b")
+
+    let productions = [
+        Production(goal: NonTerminal("S"), rule: [S, S, S]),
+        Production(goal: NonTerminal("S"), rule: [S, S]),
+        Production(goal: NonTerminal("S"), rule: [b])
     ]
-    return try! Grammar(startSymbol: NonTerminal(name: "S"), productions: rules)
+    return Grammar(productions: productions, start: NonTerminal("S"), lexicalTokens: [:])
 }
 
 /// Helper to create a grammar with epsilon productions
 func createEpsilonGrammar() -> Grammar {
-    let rules: [(NonTerminal, [Grammar.Symbol])] = [
         // S ::= A S b | a
-        (
-            NonTerminal(name: "S"),
-            [
-                .nonTerminal(NonTerminal(name: "A")),
-                .nonTerminal(NonTerminal(name: "S")),
-                .terminal(Terminal(description: "b"))
-            ]
-        ),
-        (NonTerminal(name: "S"), [.terminal(Terminal(description: "a"))]),
         // A ::= a A | ε
-        (
-            NonTerminal(name: "A"),
-            [
-                .terminal(Terminal(description: "a")),
-                .nonTerminal(NonTerminal(name: "A"))
-            ]
-        ),
-        (NonTerminal(name: "A"), [])  // epsilon production
-    ]
-    return try! Grammar(startSymbol: NonTerminal(name: "S"), productions: rules)
+
+        let S = Symbol.nonTerminal("S")
+        let A = Symbol.nonTerminal("A")
+        let a = Symbol.terminal("a")
+        let b = Symbol.terminal("b")
+        let eps = Symbol.terminal(.meta(.eps))
+        
+        let productions = [
+            Production(goal: NonTerminal("S"), rule: [A, S, b]),
+            Production(goal: NonTerminal("S"), rule: [a]),
+            Production(goal: NonTerminal("A"), rule: [a, A]),
+            Production(goal: NonTerminal("A"), rule: [eps]),
+
+        ]
+        return Grammar(productions: productions, start: NonTerminal("S"), lexicalTokens: [:])
 }
 
 // MARK: - Test Structures
@@ -277,7 +248,7 @@ struct EarleyParserTests {
     @Test("FIRST set computation")
     func testFirstSetComputation() {
         let grammar = createEpsilonGrammar()
-        let first = grammar.first(of: [.terminal(Terminal(description: "a"))])
+        let first = grammar.first(of: [t("a")])
         
         #expect(first.terminals.contains("a"))
         #expect(!first.nullable)
@@ -295,8 +266,8 @@ struct EarleyParserTests {
     func testNullableDetection() {
         let grammar = createEpsilonGrammar()
         
-        #expect(grammar.isNullableNonterminal("A"), "A is nullable (A ::= epsilon)")
-        #expect(!grammar.isNullableNonterminal("S"), "S is not nullable")
+        #expect(grammar.isNullable(NonTerminal("A"), "A is nullable (A ::= epsilon)"))
+        #expect(!grammar.isNullable(NonTerminal("S"), "S is not nullable"))
     }
     
     // MARK: - Tokenizer Tests

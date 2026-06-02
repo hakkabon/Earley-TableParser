@@ -60,7 +60,7 @@ public func buildRecogniserTable(nfa: EarleyNFA, grammar: Grammar) -> Recogniser
     // All terminal names + "$" (end of input sentinel).
     let termSymbols: [String] = Array(grammar.terminals) + ["$"]
     // All nonterminal names.
-    let nontermSymbols: [String] = Array(grammar.nonterminals)
+    let nontermSymbols: [String] = Array(grammar.nonTerminals)
 
     for p in 0..<nfa.stateCount {
         // --- Terminal columns (and $) ---
@@ -79,11 +79,13 @@ public func buildRecogniserTable(nfa: EarleyNFA, grammar: Grammar) -> Recogniser
 
         // --- Nonterminal columns ---
         for nt in nontermSymbols {
-            let sym = Symbol.nonterminal(nt)
-            let next = nfa.transition(from: p, on: sym)
-            // No completer set needed for nonterminal columns in recET
-            // (completions are indexed by terminals).
-            entries[p][nt] = RecTableEntry(nextState: next, completedNTs: [])
+//            let sym = Symbol.nonTerminal(nt)
+            if case .nonTerminal(let nt) = nt {
+                let next = nfa.transition(from: p, on: nt)
+                // No completer set needed for nonterminal columns in recET
+                // (completions are indexed by terminals).
+                entries[p][nt] = RecTableEntry(nextState: next, completedNTs: [])
+            }
         }
 
         // --- ε column ---
@@ -107,7 +109,7 @@ public func recET(table: RecogniserTable, input tokens: [String]) -> Bool {
     let n = tokens.count
     let grammar_startNT = table.nfa.states[0]
         .filter { $0.dot == 0 }
-        .map    { $0.production.lhs }
+        .map    { $0.production.goal }
         .first ?? ""
 
     // E[j] = set of (state, back-index) pairs
@@ -169,7 +171,7 @@ public func recET(table: RecogniserTable, input tokens: [String]) -> Bool {
     return E[n].contains(where: { pair in
         pair.backIndex == 0 &&
         table.nfa.states[pair.state].contains(where: { slot in
-            slot.isComplete && slot.production.lhs == grammar_startNT
+            slot.isComplete && slot.production.goal == grammar_startNT
         })
     })
 }

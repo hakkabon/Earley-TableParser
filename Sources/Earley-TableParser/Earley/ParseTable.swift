@@ -26,10 +26,10 @@ import Grammar
 public enum BSRComponent: Hashable, CustomStringConvertible {
     /// A complete production  X ::= γ  (used when the right child is a terminal or ε).
     case production(Production)
-    /// A left prefix  δx  of some production rhs, length ≥ 2.
+    /// A left prefix δx of some production rhs, length ≥ 2.
     /// Stored as (lhs, prefix) for display; the pivot structure
     /// is determined by the BSR element's indices.
-    case prefix(lhs: String, symbols: [Symbol])
+    case prefix(lhs: NonTerminal, symbols: [Symbol])
 
     public var description: String {
         switch self {
@@ -45,10 +45,10 @@ public enum BSRComponent: Hashable, CustomStringConvertible {
 
 /// A BSR element  (Ω, i, k, j).
 public struct BSRElement: Hashable, CustomStringConvertible {
-    public let omega:      BSRComponent
-    public let leftExtent: Int   // i
-    public let pivot:      Int   // k
-    public let rightExtent: Int  // j
+    public let omega: BSRComponent
+    public let leftExtent: Int      // i
+    public let pivot: Int           // k
+    public let rightExtent: Int     // j
 
     public var description: String {
         "(\(omega), \(leftExtent), \(pivot), \(rightExtent))"
@@ -68,10 +68,10 @@ func mSets(_ M: Set<Slot>, symbol x: Symbol) -> Set<BSRComponent> {
         var result = Set<BSRComponent>()
         for slot in M {
             guard let next = slot.nextSymbol, next == x else { continue }
-            let prefix = slot.production.rhs[..<slot.dot]
-            let newRhs  = Array(slot.production.rhs[..<(slot.dot + 1)])
+            let prefix = slot.production.rule[..<slot.dot]
+            let newRhs = Array(slot.production.rule[..<(slot.dot + 1)])
 
-            if slot.dot + 1 == slot.production.rhs.count {
+            if slot.dot + 1 == slot.production.rule.count {
                 // Y ::= γx  (the full production up to and including x)
                 // Use production component.
                 result.insert(.production(slot.production))
@@ -79,10 +79,10 @@ func mSets(_ M: Set<Slot>, symbol x: Symbol) -> Set<BSRComponent> {
                 // δx is a proper prefix (length ≥ 2 if delta non-empty, otherwise length 1)
                 // The paper requires |γω| ≥ 1 effectively, capturing the left prefix.
                 if newRhs.count >= 2 || (newRhs.count == 1 && !prefix.isEmpty) {
-                    result.insert(.prefix(lhs: slot.production.lhs, symbols: newRhs))
+                    result.insert(.prefix(lhs: slot.production.goal, symbols: newRhs))
                 } else {
                     // single-symbol prefix — still record
-                    result.insert(.prefix(lhs: slot.production.lhs, symbols: newRhs))
+                    result.insert(.prefix(lhs: slot.production.goal, symbols: newRhs))
                 }
             }
         }
@@ -106,18 +106,20 @@ func eSets(_ M: Set<Slot>, grammar: Grammar) -> Set<BSRComponent> {
     for slot in M {
         guard let next = slot.nextSymbol else { continue }
         // Only include if the symbol after the dot is nullable (ω ⟹* ε)
-        let isNullableNext: Bool
-        switch next {
-        case .nonterminal(let n): isNullableNext = grammar.isNullableNonterminal(n)
-        case .epsilon:            isNullableNext = true
-        case .terminal:           isNullableNext = false
-        }
+        let isNullableNext: Bool = {
+            switch next {
+            case .nonTerminal(let n): return grammar.isNullable(n)
+            case .terminal(let t) where t.isEmpty: return false
+            case .terminal: return false
+            case .metaSymbol: return false
+            }
+        }()
         guard isNullableNext else { continue }
 
-        let prefix = Array(slot.production.rhs[..<slot.dot])
+        let prefix = Array(slot.production.rule[..<slot.dot])
         if !prefix.isEmpty {
             // γω where γ ≠ ε — prefix component
-            result.insert(.prefix(lhs: slot.production.lhs, symbols: prefix))
+            result.insert(.prefix(lhs: slot.production.goal, symbols: prefix))
         } else {
             // γ is empty — production component (ω is the whole rhs)
             result.insert(.production(slot.production))
@@ -130,13 +132,13 @@ func eSets(_ M: Set<Slot>, grammar: Grammar) -> Set<BSRComponent> {
 
 public struct SLTableEntry {
     /// Next NFA state index (nil = ⊥).
-    public let nextState:      Int?
+    public let nextState: Int?
     /// Completer set A_{p,x}.
-    public let completedNTs:   Set<String>
+    public let completedNTs: Set<NonTerminal>
     /// χ₁ = m(G_p, x): BSR components for direct matches.
-    public let chi1:           Set<BSRComponent>
+    public let chi1: Set<BSRComponent>
     /// χ₂ = em(G_p, x): BSR components for nullable matches.
-    public let chi2:           Set<BSRComponent>
+    public let chi2: Set<BSRComponent>
 }
 
 // MARK: - SL Parse Table
@@ -156,8 +158,8 @@ public struct SLParseTable {
 
 public func buildSLParseTable(nfa: EarleyNFA, grammar: Grammar) -> SLParseTable {
     let follow = grammar.followSets()
-    let termSymbols:    [String] = Array(grammar.terminals) + ["$"]
-    let nontermSymbols: [String] = Array(grammar.nonterminals)
+    let termSymbols: [Terminal] = Array(grammar.terminals) + ["$"]
+    let nontermSymbols: [NonTerminal] = Array(grammar.nonTerminals)
 
     var entries = [[String: SLTableEntry]](repeating: [:], count: nfa.stateCount)
 
@@ -166,17 +168,17 @@ public func buildSLParseTable(nfa: EarleyNFA, grammar: Grammar) -> SLParseTable 
 
         // Pre-compute m() and em() for all symbols.
         for t in termSymbols {
-            let sym  = Symbol.terminal(t)
-            let next = nfa.transition(from: p, on: sym)
+            let symbol = Symbol.terminal(t)
+            let next = nfa.transition(from: p, on: symbol)
 
-            var completed = Set<String>()
+            var completed = Set<NonTerminal>()
             for slot in gp where slot.isComplete {
-                if follow[slot.production.lhs]?.contains(t) == true {
-                    completed.insert(slot.production.lhs)
+                if follow[slot.production.goal]?.contains(t) == true {
+                    completed.insert(slot.production.goal)
                 }
             }
 
-            let chi1 = mSets(gp, symbol: sym)
+            let chi1 = mSets(gp, symbol: symbol)
             // χ₂: em of the target state (if it exists)
             let chi2: Set<BSRComponent>
             if let h = next {
@@ -186,8 +188,7 @@ public func buildSLParseTable(nfa: EarleyNFA, grammar: Grammar) -> SLParseTable 
                 chi2 = []
             }
 
-            entries[p][t] = SLTableEntry(
-                nextState: next, completedNTs: completed, chi1: chi1, chi2: chi2)
+            entries[p][t] = SLTableEntry(nextState: next, completedNTs: completed, chi1: chi1, chi2: chi2)
         }
 
         for nt in nontermSymbols {
@@ -203,14 +204,12 @@ public func buildSLParseTable(nfa: EarleyNFA, grammar: Grammar) -> SLParseTable 
                 chi2 = []
             }
 
-            entries[p][nt] = SLTableEntry(
-                nextState: next, completedNTs: [], chi1: chi1, chi2: chi2)
+            entries[p][nt] = SLTableEntry(nextState: next, completedNTs: [], chi1: chi1, chi2: chi2)
         }
 
         // ε column
         let epsNext = nfa.transition(from: p, on: .epsilon)
-        entries[p]["ε"] = SLTableEntry(
-            nextState: epsNext, completedNTs: [], chi1: [], chi2: [])
+        entries[p]["ε"] = SLTableEntry(nextState: epsNext, completedNTs: [], chi1: [], chi2: [])
     }
 
     return SLParseTable(entries: entries, nfa: nfa, grammar: grammar)
