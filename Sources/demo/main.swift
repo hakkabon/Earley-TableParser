@@ -1,13 +1,71 @@
-// Main.swift
-// Demo application showcasing the Earley Table Traversing Parser
-// Implements all examples from Scott & Johnstone (2026)
+// main.swift  —  Demo for the Earley Table Traversing Parser
+//
+// Reproduces the three example grammars used throughout
+// Scott & Johnstone, "Earley Table Traversing Parser",
+// Science of Computer Programming 247 (2026) 103335.
+//
+//   Γ₁: S ::= A S b | a       A ::= a A | ε
+//   Γ₂: S ::= B B S a | b b b  B ::= b b B | ε
+//   Γ₃: S ::= S S S | S S | b   (highly ambiguous)
 
 import ArgumentParser
 import Foundation
 import Earley_TableParser
 import Grammar
 
-// MARK: - Demo Utility Functions
+// MARK: - Grammar construction helpers
+
+/// Convenience: terminal symbol from a plain string.
+func T(_ s: String) -> Symbol { .terminal(Terminal(string: s)) }
+/// Convenience: nonterminal symbol.
+func N(_ s: String) -> Symbol { .nonTerminal(NonTerminal(name: s)) }
+/// Convenience: nonterminal.
+func NT(_ s: String) -> NonTerminal { NonTerminal(name: s) }
+
+// MARK: - Γ₁  (Section 2.3)
+//   S ::= A S b | a
+//   A ::= a A | ε
+
+let gamma1 = Grammar(
+    productions: [
+        Production(goal: NT("S"), rule: [N("A"), N("S"), T("b")]),
+        Production(goal: NT("S"), rule: [T("a")]),
+        Production(goal: NT("A"), rule: [T("a"), N("A")]),
+        Production(goal: NT("A"), rule: []),     // ε-production
+    ],
+    start: NT("S"),
+    lexicalTokens: [:]
+)
+
+// MARK: - Γ₂  (Section 4.3 / 5.1 / 6.3)
+//   S ::= B B S a | b b b
+//   B ::= b b B | ε
+
+let gamma2 = Grammar(
+    productions: [
+        Production(goal: NT("S"), rule: [N("B"), N("B"), N("S"), T("a")]),
+        Production(goal: NT("S"), rule: [T("b"), T("b"), T("b")]),
+        Production(goal: NT("B"), rule: [T("b"), T("b"), N("B")]),
+        Production(goal: NT("B"), rule: []),     // ε-production
+    ],
+    start: NT("S"),
+    lexicalTokens: [:]
+)
+
+// MARK: - Γ₃  (Section 5.1 — highly ambiguous)
+//   S ::= S S S | S S | b
+
+let gamma3 = Grammar(
+    productions: [
+        Production(goal: NT("S"), rule: [N("S"), N("S"), N("S")]),
+        Production(goal: NT("S"), rule: [N("S"), N("S")]),
+        Production(goal: NT("S"), rule: [T("b")]),
+    ],
+    start: NT("S"),
+    lexicalTokens: [:]
+)
+
+// MARK: - Display helpers
 
 func separator(_ title: String) {
     print("\n" + String(repeating: "═", count: 70))
@@ -15,239 +73,147 @@ func separator(_ title: String) {
     print(String(repeating: "═", count: 70))
 }
 
-func testRecogniser(grammar: Grammar, name: String, cases: [(input: [String], expected: Bool)]) {
-    separator("Recogniser Test — \(name)")
-    let nfa = buildEarleyNFA(grammar: grammar)
-    let table = buildRecogniserTable(nfa: nfa, grammar: grammar)
-    print("NFA states: \(nfa.stateCount)")
-
-    var passed = 0
-    for (tokens, expected) in cases {
-        let result = recET(table: table, input: tokens)
-        let status = result == expected ? "✓ PASS" : "✗ FAIL"
-        let inputStr = tokens.isEmpty ? "ε" : tokens.joined()
-        print("  recET(\"\(inputStr)\") → \(result)  [expected \(expected)]  \(status)")
-        if result == expected { passed += 1 }
-    }
-    print("Result: \(passed)/\(cases.count) passed")
-}
-
-func testParser(grammar: Grammar, name: String, cases: [(input: [String], expected: Bool)]) {
-    separator("Parser Test — \(name)")
-    let nfa = buildEarleyNFA(grammar: grammar)
-    let slTable = buildSLParseTable(nfa: nfa, grammar: grammar)
-    print("NFA states: \(nfa.stateCount)")
-
-    var passed = 0
-    for (tokens, expected) in cases {
-        let result = simpleET(table: slTable, input: tokens)
-        let status = result.accepted == expected ? "✓ PASS" : "✗ FAIL"
-        let inputStr = tokens.isEmpty ? "ε" : tokens.joined()
-        print("  simpleET(\"\(inputStr)\") → accepted=\(result.accepted)  [expected \(expected)]  \(status)")
-        print("    BSR elements: \(result.bsrSet.count), Ambiguous: \(result.hasAmbiguity)")
-        
-        // Print Earley sets for short inputs
-        if tokens.count <= 3 {
-            for (j, ej) in result.earleySets.enumerated() {
-                let sorted = ej.sorted { a, b in
-                    a.state < b.state || (a.state == b.state && a.backIndex < b.backIndex)
-                }.map { "(\($0.state),\($0.backIndex))" }
-                print("    E_\(j) = {\(sorted.joined(separator: ", "))}")
-            }
-        }
-        
-        if result.accepted == expected { passed += 1 }
-    }
-    print("Result: \(passed)/\(cases.count) passed")
-}
-
 func printNFAStates(nfa: EarleyNFA, title: String) {
     separator("NFA States — \(title)")
     for (i, state) in nfa.states.enumerated() {
-        let coreLabel = nfa.isCore(i) ? " [core]" : ""
-        print("  G_\(i)\(coreLabel):")
+        let coreTag = nfa.isCore(i) ? " [core]" : ""
+        print("  G_\(i)\(coreTag):")
         for slot in state.sorted(by: { $0.description < $1.description }) {
             print("    \(slot)")
         }
     }
 }
 
-// MARK: - Test Grammars from the Paper
+// MARK: - Test runners
 
-/// Γ₁: S ::= A S b | a,  A ::= a A | ε
-func createGamma1() -> Grammar {
-    let rules: [(NonTerminal, [Grammar.Symbol])] = [
-        (
-            NonTerminal(name: "S"),
-            [
-                .nonTerminal(NonTerminal(name: "A")),
-                .nonTerminal(NonTerminal(name: "S")),
-                .terminal(Terminal(description: "b"))
-            ]
-        ),
-        (NonTerminal(name: "S"), [.terminal(Terminal(description: "a"))]),
-        (
-            NonTerminal(name: "A"),
-            [
-                .terminal(Terminal(description: "a")),
-                .nonTerminal(NonTerminal(name: "A"))
-            ]
-        ),
-        (NonTerminal(name: "A"), [])  // ε
-    ]
-    return try! Grammar(startSymbol: NonTerminal(name: "S"), productions: rules)
+func testRecogniser(grammar: Grammar, name: String,
+                    cases: [(input: [String], expected: Bool)]) {
+    separator("Recogniser — \(name)")
+    let nfa   = buildEarleyNFA(grammar: grammar)
+    let table = buildRecogniserTable(nfa: nfa, grammar: grammar)
+    print("NFA states: \(nfa.stateCount)")
+    var pass = 0
+    for (tokens, expected) in cases {
+        let got    = recET(table: table, input: tokens)
+        let ok     = got == expected
+        let mark   = ok ? "✓" : "✗ FAIL"
+        let input  = tokens.isEmpty ? "ε" : "\"\(tokens.joined())\""
+        print("  recET(\(input)) → \(got) [expected \(expected)] \(mark)")
+        if ok { pass += 1 }
+    }
+    print("  \(pass)/\(cases.count) passed")
 }
 
-/// Γ₂: S ::= B B S a | b b b,  B ::= b b B | ε
-func createGamma2() -> Grammar {
-    let rules: [(NonTerminal, [Grammar.Symbol])] = [
-        (
-            NonTerminal(name: "S"),
-            [
-                .nonTerminal(NonTerminal(name: "B")),
-                .nonTerminal(NonTerminal(name: "B")),
-                .nonTerminal(NonTerminal(name: "S")),
-                .terminal(Terminal(description: "a"))
-            ]
-        ),
-        (
-            NonTerminal(name: "S"),
-            [
-                .terminal(Terminal(description: "b")),
-                .terminal(Terminal(description: "b")),
-                .terminal(Terminal(description: "b"))
-            ]
-        ),
-        (
-            NonTerminal(name: "B"),
-            [
-                .terminal(Terminal(description: "b")),
-                .terminal(Terminal(description: "b")),
-                .nonTerminal(NonTerminal(name: "B"))
-            ]
-        ),
-        (NonTerminal(name: "B"), [])  // ε
-    ]
-    return try! Grammar(startSymbol: NonTerminal(name: "S"), productions: rules)
+func testParser(grammar: Grammar, name: String,
+                cases: [(input: [String], expected: Bool)]) {
+    separator("Parser — \(name)")
+    let nfa     = buildEarleyNFA(grammar: grammar)
+    let slTable = buildSLParseTable(nfa: nfa, grammar: grammar)
+    print("NFA states: \(nfa.stateCount)")
+    var pass = 0
+    for (tokens, expected) in cases {
+        let result = simpleET(table: slTable, input: tokens)
+        let ok     = result.accepted == expected
+        let mark   = ok ? "✓" : "✗ FAIL"
+        let input  = tokens.isEmpty ? "ε" : "\"\(tokens.joined())\""
+        print("  simpleET(\(input)) → \(result.accepted) [expected \(expected)] \(mark)")
+        print("    BSR elements: \(result.bsrSet.count)  ambiguous: \(result.hasAmbiguity)")
+        // Print Earley sets for short inputs.
+        if tokens.count <= 3 {
+            for (j, ej) in result.earleySets.enumerated() {
+                let pairs = ej.sorted {
+                    $0.state < $1.state || ($0.state == $1.state && $0.backIndex < $1.backIndex)
+                }.map { "(\($0.state),\($0.backIndex))" }
+                print("    𝔼_\(j) = { \(pairs.joined(separator: ", ")) }")
+            }
+        }
+        if ok { pass += 1 }
+    }
+    print("  \(pass)/\(cases.count) passed")
 }
 
-/// Γ₃: S ::= S S S | S S | b (highly ambiguous)
-func createGamma3() -> Grammar {
-    let rules: [(NonTerminal, [Grammar.Symbol])] = [
-        (
-            NonTerminal(name: "S"),
-            [
-                .nonTerminal(NonTerminal(name: "S")),
-                .nonTerminal(NonTerminal(name: "S")),
-                .nonTerminal(NonTerminal(name: "S"))
-            ]
-        ),
-        (
-            NonTerminal(name: "S"),
-            [
-                .nonTerminal(NonTerminal(name: "S")),
-                .nonTerminal(NonTerminal(name: "S"))
-            ]
-        ),
-        (NonTerminal(name: "S"), [.terminal(Terminal(description: "b"))])
-    ]
-    return try! Grammar(startSymbol: NonTerminal(name: "S"), productions: rules)
-}
-
-// MARK: - Main Command
+// MARK: - Main command
 
 @main
-struct EarleyTableParserDemo: ParsableCommand {
-    @Flag(help: "Print NFA states for each grammar") var printNFA = false
-    @Flag(help: "Run only recogniser tests") var recogniserOnly = false
+struct Demo: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "demo",
+        abstract: "Earley Table Traversing Parser — Scott & Johnstone (2026)"
+    )
+
+    @Flag(name: .shortAndLong, help: "Also print NFA state tables")
+    var nfa: Bool = false
 
     mutating func run() throws {
-        print("╔═══════════════════════════════════════════════════════════╗")
-        print("║  Earley Table Traversing Parser — Scott & Johnstone      ║")
-        print("║  Science of Computer Programming 247 (2026) 103335       ║")
-        print("╚═══════════════════════════════════════════════════════════╝")
+        print("╔══════════════════════════════════════════════════════════════════╗")
+        print("║   Earley Table Traversing Parser  —  Scott & Johnstone (2026)  ║")
+        print("║   Science of Computer Programming 247, 103335                  ║")
+        print("╚══════════════════════════════════════════════════════════════════╝")
 
-        // ── Γ₁ ──
-        let gamma1 = createGamma1()
-        if printNFA {
-            let nfa1 = buildEarleyNFA(grammar: gamma1)
-            printNFAStates(nfa: nfa1, title: "Γ₁")
-        }
+        // ── Γ₁ ──────────────────────────────────────────────────────────────
+        if nfa { printNFAStates(nfa: buildEarleyNFA(grammar: gamma1), title: "Γ₁") }
 
-        testRecogniser(grammar: gamma1, name: "Γ₁: S::=ASb|a  A::=aA|ε", cases: [
-            (input: ["a", "a", "b"],    expected: true),
-            (input: ["a"],              expected: true),
-            (input: ["a", "b"],         expected: true),
-            (input: ["a", "a", "a", "b", "b"], expected: true),
-            (input: ["b"],              expected: false),
-            (input: ["a", "a"],         expected: false),
+        testRecogniser(grammar: gamma1, name: "Γ₁  S::=ASb|a  A::=aA|ε", cases: [
+            (["a"],                   true),
+            (["a","b"],               true),   // A→ε, so S→ASb with S→a
+            (["a","a","b"],           true),   // paper example
+            (["a","a","a","b","b"],   true),
+            (["b"],                   false),
+            (["a","a"],               false),
         ])
 
-        if !recogniserOnly {
-            testParser(grammar: gamma1, name: "Γ₁", cases: [
-                (input: ["a", "a", "b"],    expected: true),
-                (input: ["a"],              expected: true),
-                (input: ["b"],              expected: false),
-            ])
-        }
-
-        // ── Γ₂ ──
-        let gamma2 = createGamma2()
-        if printNFA {
-            let nfa2 = buildEarleyNFA(grammar: gamma2)
-            printNFAStates(nfa: nfa2, title: "Γ₂")
-        }
-
-        testRecogniser(grammar: gamma2, name: "Γ₂: S::=BBSa|bbb  B::=bbB|ε", cases: [
-            (input: ["b","b","b"],        expected: true),
-            (input: ["b","b","b","a"],    expected: true),
-            (input: ["b","b"],            expected: false),
-            (input: ["b"],                expected: false),
+        testParser(grammar: gamma1, name: "Γ₁", cases: [
+            (["a"],         true),
+            (["a","b"],     true),
+            (["a","a","b"], true),
+            (["b"],         false),
         ])
 
-        if !recogniserOnly {
-            testParser(grammar: gamma2, name: "Γ₂", cases: [
-                (input: ["b","b","b"],        expected: true),
-                (input: ["b","b","b","a"],    expected: true),
-                (input: ["b"],                expected: false),
-            ])
-        }
+        // ── Γ₂ ──────────────────────────────────────────────────────────────
+        if nfa { printNFAStates(nfa: buildEarleyNFA(grammar: gamma2), title: "Γ₂") }
 
-        // ── Γ₃ (highly ambiguous) ──
-        let gamma3 = createGamma3()
-        if printNFA {
-            let nfa3 = buildEarleyNFA(grammar: gamma3)
-            printNFAStates(nfa: nfa3, title: "Γ₃ (ambiguous)")
-        }
-
-        testRecogniser(grammar: gamma3, name: "Γ₃: S::=SSS|SS|b", cases: [
-            (input: ["b"],                expected: true),
-            (input: ["b","b"],            expected: true),
-            (input: ["b","b","b"],        expected: true),
-            (input: ["b","b","b","b"],    expected: true),
-            (input: ["a"],                expected: false),
+        testRecogniser(grammar: gamma2, name: "Γ₂  S::=BBSa|bbb  B::=bbB|ε", cases: [
+            (["b","b","b"],       true),
+            (["b","b","b","a"],   true),   // B→ε,ε; S→BBSa
+            (["b","b"],           false),
+            (["b"],               false),
         ])
 
-        if !recogniserOnly {
-            testParser(grammar: gamma3, name: "Γ₃ (ambiguous)", cases: [
-                (input: ["b"],                expected: true),
-                (input: ["b","b"],            expected: true),
-                (input: ["b","b","b"],        expected: true),
-                (input: ["b","b","b","b"],    expected: true),
-            ])
-        }
+        testParser(grammar: gamma2, name: "Γ₂", cases: [
+            (["b","b","b"],       true),
+            (["b","b","b","a"],   true),
+            (["b"],               false),
+        ])
 
-        // ── Grammar Analysis ──
-        separator("Grammar Analysis")
-        for (grammar, name) in [(gamma1, "Γ₁"), (gamma2, "Γ₂"), (gamma3, "Γ₃")] {
-            let follow = grammar.followSets()
-            print("\n  \(name) FOLLOW sets:")
-            for (nt, fs) in follow.sorted(by: { $0.key < $1.key }) {
-                print("    FOLLOW(\(nt)) = {\(fs.sorted().joined(separator: ", "))}")
+        // ── Γ₃ ──────────────────────────────────────────────────────────────
+        if nfa { printNFAStates(nfa: buildEarleyNFA(grammar: gamma3), title: "Γ₃") }
+
+        testRecogniser(grammar: gamma3, name: "Γ₃  S::=SSS|SS|b  (ambiguous)", cases: [
+            (["b"],               true),
+            (["b","b"],           true),
+            (["b","b","b"],       true),   // §5.1 example
+            (["b","b","b","b"],   true),
+            (["a"],               false),
+        ])
+
+        testParser(grammar: gamma3, name: "Γ₃ (ambiguous)", cases: [
+            (["b"],               true),
+            (["b","b"],           true),
+            (["b","b","b"],       true),
+            (["b","b","b","b"],   true),
+        ])
+
+        // ── FOLLOW sets ──────────────────────────────────────────────────────
+        separator("FOLLOW sets")
+        for (g, name) in [(gamma1,"Γ₁"),(gamma2,"Γ₂"),(gamma3,"Γ₃")] {
+            let follow = g.followSets()
+            print("  \(name):")
+            for (nt, fs) in follow.sorted(by: { $0.key.name < $1.key.name }) {
+                let syms = fs.map(\.description).sorted().joined(separator: ", ")
+                print("    FOLLOW(\(nt.name)) = { \(syms) }")
             }
         }
 
-        separator("Demo Complete")
-        print("✓ All tests completed successfully")
+        separator("Done  ✓")
     }
 }

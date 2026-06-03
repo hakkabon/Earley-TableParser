@@ -1,6 +1,6 @@
 //
 //  Parser.swift
-//  Grammar
+//  Earley-TableParser
 //
 //  Created by Ulf Akerstedt-Inoue on 2023/08/11.
 //  Copyright © 2023 hakkabon software. All rights reserved.
@@ -9,22 +9,18 @@
 import Foundation
 import Grammar
 
-/// A parser that can parse ambiguous grammars and retrieve every possible syntax tree
+/// A parser that can parse potentially ambiguous grammars and retrieve every
+/// possible parse (syntax) tree.
 public protocol GeneralizedParser {
-    /// Generates all syntax trees explaining how a word can be derived from a grammar.
+    /// Parse the given string and return a parse result.
     ///
-    /// This function should only be used for ambiguous grammars and if it is necessary to
-    /// retrieve all parse trees, as it comes with an additional cost in runtime.
-    ///
-    /// For unambiguous grammars, this function should return the same results as `syntaxTree(for:)`.
-    ///
-    /// - Parameter string: Input word, for which all parse trees should be generated
-    /// - Returns: All syntax trees which explain how the input was derived from the recognized grammar
-    /// - Throws: A syntax error if the word is not in the language recognized by the parser
+    /// - Parameter string: The input string to parse.
+    /// - Returns: An `EarleyParseResult` describing whether the parse succeeded
+    ///   and carrying the BSR set / SPPF graph representing all derivations.
+    /// - Throws: A `SyntaxError` if the input is not in the grammar's language.
     func parse(_ string: String) throws -> EarleyParseResult
 }
 
-/// Deprecated alias kept for source compatibility.
+/// Source-compatibility alias (deprecated).
 @available(*, deprecated, renamed: "GeneralizedParser")
 public typealias GereralizedParser = GeneralizedParser
-
