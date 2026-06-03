@@ -146,8 +146,8 @@ struct Demo: ParsableCommand {
 
     mutating func run() throws {
         print("╔══════════════════════════════════════════════════════════════════╗")
-        print("║   Earley Table Traversing Parser  —  Scott & Johnstone (2026)  ║")
-        print("║   Science of Computer Programming 247, 103335                  ║")
+        print("║   Earley Table Traversing Parser  —  Scott & Johnstone (2026)    ║")
+        print("║   Science of Computer Programming 247, 103335                    ║")
         print("╚══════════════════════════════════════════════════════════════════╝")
 
         // ── Γ₁ ──────────────────────────────────────────────────────────────
