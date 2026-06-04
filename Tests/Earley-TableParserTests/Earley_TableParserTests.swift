@@ -8,6 +8,7 @@
 
 import Testing
 @testable import Earley_TableParser
+import Foundation
 import Grammar
 
 // MARK: - Grammar Helpers

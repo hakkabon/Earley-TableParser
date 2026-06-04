@@ -22,19 +22,19 @@ This library implements a robust, generalised Earley parser that:
 ├─────────────────────────────────────────────────────────────────────┤
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐               │
 │  │   Grammar    │→ │   Earley NFA │→ │  Parse Table │               │
-│  │ (context-free│  │  (states G₀ │  │  (SL table)  │               │
-│  │    grammar)  │  │   … G_q)    │  │                │               │
+│  │ (context-free│  │  (states G₀  │  │  (SL table)  │               │
+│  │    grammar)  │  │   … G_q)     │  │              │               │
 │  └──────────────┘  └──────────────┘  └──────────────┘               │
-│                              │                                        │
-│                              ▼                                        │
+│                              │                                      │
+│                              ▼                                      │
 │  ┌─────────────────────────────────────────────────────────────┐    │
 │  │                    simpleET() / recET()                     │    │
 │  │                    (parser / recogniser)                    │    │
 │  │  Input: tokens ────────→  Earley sets 𝔼₀ … 𝔼_n              │    │
 │  │                           BSR set Υ                         │    │
 │  └─────────────────────────────────────────────────────────────┘    │
-│                              │                                        │
-│                              ▼                                        │
+│                              │                                      │
+│                              ▼                                      │
 │  ┌─────────────────────────────────────────────────────────────┐    │
 │  │                    Output:                                  │    │
 │  │  • Accept/reject decision                                   │    │

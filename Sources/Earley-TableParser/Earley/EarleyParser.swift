@@ -17,36 +17,11 @@
 import Foundation
 import Grammar
 
-// MARK: - Parse Result
-
-/// The result of an  simpleET()  run.
-public struct EarleyParseResult {
-    /// True if and only if the input is in the grammar's language.
-    public let accepted: Bool
-    /// The BSR set Υ containing all binarised derivation subtrees.
-    public let bsrSet: Set<BSRElement>
-    /// The Earley sets 𝔼₀ … 𝔼_n.
-    public let earleySets: [Set<EarleyPair>]
-    /// SPPF graph (constructed on demand by calling buildSPPF()).
-    public let sppfGraph: SPPFGraph?
-
-    /// True if the BSR set witnesses more than one complete derivation tree
-    /// for the recognised input, i.e. the grammar is ambiguous for this input.
-    public var hasAmbiguity: Bool {
-        guard let graph = sppfGraph else {
-            // Use the SPPF graph when available; fall back to BSR heuristic.
-            return bsrSetIsAmbiguous(bsrSet)
-        }
-        return graph.getAllNodes().contains { node in
-            graph.getChildren(of: node).count > 1
-        }
-    }
-}
 
 /// Heuristic ambiguity check on the raw BSR set:
 /// if two distinct BSR elements share the same (LHS, leftExtent, rightExtent)
 /// the parse is ambiguous.
-private func bsrSetIsAmbiguous(_ bsr: Set<BSRElement>) -> Bool {
+func bsrSetIsAmbiguous(_ bsr: Set<BSRElement>) -> Bool {
     var seen = Set<AmbiguityKey>()
     for elem in bsr {
         guard let lhs = elem.omega.lhsNonterminal else { continue }
@@ -70,7 +45,7 @@ private struct AmbiguityKey: Hashable {
 ///   - acceptance flag
 ///   - the BSR set Υ
 ///   - the Earley sets 𝔼₀ … 𝔼_n
-public func simpleET(table: SLParseTable, input tokens: [String]) -> EarleyParseResult {
+public func simpleET(table: SLParseTable, input tokens: [String]) -> ParseResult {
     let n = tokens.count
 
     // a(j) = tokens[j-1] for j in 1…n;  a(n+1) = "$"
@@ -151,7 +126,7 @@ public func simpleET(table: SLParseTable, input tokens: [String]) -> EarleyParse
         }
     }
 
-    return EarleyParseResult(accepted: accepted, bsrSet: Upsilon, earleySets: E, sppfGraph: nil)
+    return ParseResult(accepted: accepted, bsrSet: Upsilon, earleySets: E, sppfGraph: nil)
 }
 
 // MARK: - BSR → SPPF construction

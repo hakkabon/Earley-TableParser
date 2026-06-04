@@ -129,9 +129,9 @@ public func tokenizeAndParse(
     tokenizer: EarleyTokenizer,
     table: SLParseTable,
     grammar: Grammar
-) throws -> EarleyParseResult {
+) throws -> ParseResult {
     guard !input.isEmpty else {
-        return EarleyParseResult(accepted: false, bsrSet: [], earleySets: [], sppfGraph: nil)
+        return ParseResult(accepted: false, bsrSet: [], earleySets: [], sppfGraph: nil)
     }
     
     let tokens = try tokenizer.tokenize(input)
