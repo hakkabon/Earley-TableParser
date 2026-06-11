@@ -1,49 +1,65 @@
 # Earley Table Traversing Parser
 
-A Swift implementation of the Earley Table Traversing Parser algorithm from:
+A Swift implementation of the Earley Table Traversing Parser algorithm developed by **Scott & Johnstone**.
 
-**Scott & Johnstone**, *"Earley Table Traversing Parser"*, Science of Computer Programming 247 (2026), https://doi.org/10.1016/j.scico.2025.103335
+> **Scott & Johnstone**, *"Earley Table Traversing Parsers"*,  
+> Science of Computer Programming **247** (2026) 103335  
+> https://doi.org/10.1016/j.scico.2025.103335
+
+[![Swift 5.9+](https://img.shields.io/badge/Swift-5.9%2B-orange.svg)](https://swift.org)  
+[![Platforms](https://img.shields.io/badge/platforms-macOS%2011%20%7C%20iOS%2014-blue.svg)](https://developer.apple.com/swift/)  
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)  
+
+---
 
 ## Overview
 
-This library implements a robust, generalised Earley parser that:
+This library implements a fully general context-free parser that handles **any** context-free grammar — including ambiguous, left-recursive, and ε-containing grammars — and produces a **Shared Packed Parse Forest (SPPF)** representing all parse derivations simultaneously.
 
-- **Handles any context-free grammar**, including ambiguous and left-recursive grammars
-- **Produces a Shared Packed Parse Forest (SPPF)** representing all possible parse trees
-- **Uses Binary Subset Representation (BSR)** internally to efficiently pack derivations
-- **Extracts specific syntax trees** on demand from the SPPF
-- **Detects ambiguity** by counting distinct derivations for the same input
+The distinguishing features of the algorithm relative to classical Earley are:
+
+- **Pre-computed tables** replace the on-the-fly slot generation of classical Earley, giving practical speedups of 2–3× on large grammars (the paper reports competitive performance with their fastest LR-style general parser).
+- **Binary Subtree Representation (BSR)** sets provide a compact, set-based representation of all derivations that can be pre-computed in parts and stored in the table.
+- **SLR(1) and extended lookahead** modes reduce unnecessary work without limiting the class of grammars that can be recognised.
+- **Algorithmic simplicity**: the core of `parseET()` is eight lines of pseudocode (Section 7.3 of the paper).
+
+---
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                        Earley Table Parser                          │
-├─────────────────────────────────────────────────────────────────────┤
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐               │
-│  │   Grammar    │→ │   Earley NFA │→ │  Parse Table │               │
-│  │ (context-free│  │  (states G₀  │  │  (SL table)  │               │
-│  │    grammar)  │  │   … G_q)     │  │              │               │
-│  └──────────────┘  └──────────────┘  └──────────────┘               │
-│                              │                                      │
-│                              ▼                                      │
-│  ┌─────────────────────────────────────────────────────────────┐    │
-│  │                    simpleET() / recET()                     │    │
-│  │                    (parser / recogniser)                    │    │
-│  │  Input: tokens ────────→  Earley sets 𝔼₀ … 𝔼_n              │    │
-│  │                           BSR set Υ                         │    │
-│  └─────────────────────────────────────────────────────────────┘    │
-│                              │                                      │
-│                              ▼                                      │
-│  ┌─────────────────────────────────────────────────────────────┐    │
-│  │                    Output:                                  │    │
-│  │  • Accept/reject decision                                   │    │
-│  │  • BSR set (packed derivations)                             │    │
-│  │  • SPPF graph (Shared Packed Parse Forest)                  │    │
-│  │  • Ambiguity detection                                      │    │
-│  └─────────────────────────────────────────────────────────────┘    │
-└─────────────────────────────────────────────────────────────────────┘
+Grammar (context-free)
+       │
+       ▼
+  buildEarleyNFA()
+       │  produces Earley NFA  G₀ … G_q
+       │  each state is an entailment-closed set of grammar slots
+       ▼
+  buildSLParseTable()        buildELParseTable()
+  (simple lookahead)         (extended lookahead)
+       │                            │
+       │  𝒯_Γ^SL(p, x) =            │  𝒯_Γ^EL(i, x) =
+       │    (m, A_{p,x}, χ₁, χ₂)    │    (h, χ₁, χ₂)
+       │                            │  + SELECT(i), rLHS(i) per state
+       ▼                            ▼
+  simpleET(table:input:)     parseET(table:input:)
+       │                            │
+       └────────────┬───────────────┘
+                    │  produces
+                    ▼
+            ParseResult
+            ├── accepted: Bool
+            ├── bsrSet: Set<BSRElement>   (packed derivations)
+            ├── earleySets: [Set<EarleyPair>]
+            └── sppfGraph: SPPFGraph      (Shared Packed Parse Forest)
+                    │
+                    ▼
+             EarleyTableParser  (public facade)
+             ├── syntaxTree(for:)       → ParseTree   (one tree)
+             └── allSyntaxTrees(for:)   → [ParseTree] (all trees)
 ```
+
+---
 
 ## Quick Start
 
@@ -51,7 +67,7 @@ This library implements a robust, generalised Earley parser that:
 import Earley_TableParser
 import Grammar
 
-// Define a grammar
+// 1. Define a grammar
 let grammar = Grammar(
     productions: [
         Production(goal: NonTerminal(name: "S"), rule: [
@@ -66,315 +82,260 @@ let grammar = Grammar(
             .terminal(Terminal(string: "a")),
             .nonTerminal(NonTerminal(name: "A"))
         ]),
-        Production(goal: NonTerminal(name: "A"), rule: [])  // ε
+        Production(goal: NonTerminal(name: "A"), rule: [])   // A → ε
     ],
     start: NonTerminal(name: "S"),
     lexicalTokens: [:]
 )
 
-// Build parser components
-let nfa = buildEarleyNFA(grammar: grammar)
-let table = buildSLParseTable(nfa: nfa, grammar: grammar)
+// 2. Create a parser (tables pre-computed once at init time)
+let parser = EarleyTableParser(grammar: grammar)
 
-// Parse input
-let tokens = ["a", "a", "b"]
-let result = simpleET(table: table, input: tokens)
+// 3a. Get one parse tree (DeterministicParser)
+let tree = try parser.syntaxTree(for: "a a b")
 
-if result.accepted {
-    print("Input accepted!")
-    print("BSR elements: \(result.bsrSet.count)")
-    print("Ambiguous: \(result.hasAmbiguity)")
-    
-    // Build SPPF for derivation extraction
-    let sppf = buildSPPF(from: result.bsrSet, grammar: grammar, tokens: tokens)
-    
-    // Extract a specific derivation
-    let derivation = extractDerivation(from: result.bsrSet, grammar: grammar, tokens: tokens)
-    print("Derivation: \(derivation ?? "N/A")")
+// 3b. Get all parse trees (GeneralizedParser — useful for ambiguous grammars)
+let allTrees = try parser.allSyntaxTrees(for: "a a b")
+
+// 3c. Get the raw result (BSR set + SPPF graph)
+let result = try parser.parse("a a b")
+print("BSR elements: \(result.bsrSet.count)")
+print("Ambiguous: \(result.hasAmbiguity)")
+
+// 4. Use the recogniser only (fastest, no BSR/SPPF)
+print("Accepted: \(parser.recognizes("a a b"))")
+```
+
+---
+
+## Key Concepts
+
+### Grammar Slots
+
+A **grammar slot** `X ::= α · β` (also called an LR item) identifies a position inside a production rule. The dot `·` separates the part already matched (`α`) from the part still to be matched (`β`). Every production `X ::= γ` of length n gives n+1 slots.
+
+### Earley NFA
+
+The Earley NFA is a pre-computed finite automaton whose states are **entailment-closed** sets of grammar slots. Two operations build it:
+
+- **`calls(M)`** — closes a set M of slots under *left-null calls*: if `X ::= α · Y β ∈ M` and `α ⟹* ε`, all slots `Y ::= ω · γ` where `ω ⟹* ε` are added (transitively).
+- **`move(M, x)`** — advances every slot in M whose next symbol is `x`, then closes under `calls`.
+
+The result is an NFA `G₀, G₁, …, G_q` similar in spirit to LR(0) DFA states, but constructed without determinisation. `G₀` is the start state.
+
+### Parse Tables
+
+The pre-computed tables replace the per-parse slot construction of classical Earley with simple array lookups.
+
+#### SL Table  `𝒯_Γ^SL`
+
+Each entry `𝒯_Γ^SL(p, x) = (m, A_{p,x}, χ₁, χ₂)` where:
+
+| Field | Meaning |
+|---|---|
+| `m` | Next NFA state after consuming `x` (or `⊥`) |
+| `A_{p,x}` | SLR(1) completer set: nonterminals `Y` with `Y ::= γ· ∈ G_p` and `x ∈ FOLLOW(Y)` |
+| `χ₁` | `m(G_p, x)`: BSR grammar components for the direct transition on `x` |
+| `χ₂` | `em(G_p, x)`: BSR components for nullable contributions |
+
+#### EL Table  `𝒯_Γ^EL`
+
+The extended-lookahead table replaces `A_{p,x}` with two per-state sets:
+
+| Field | Meaning |
+|---|---|
+| `SELECT(p)` | Terminals `t` such that `G_p` contains `μ · ν` with `ν ⟹* tv'`, or `ν ⟹* ε` and `t ∈ FOLLOW(Y)` |
+| `rLHS(p)` | Nonterminals `Y` with a complete item `Y ::= γ· ∈ G_p` |
+
+`SELECT` is strictly more precise than FOLLOW: it guards both the completer and the scanner step, eliminating spurious actions on grammars with hidden left recursion.
+
+### BSR Sets
+
+A **BSR element** `(Ω, i, k, j)` represents a binarised derivation subtree:
+
+- `Ω` is either a complete production `X ::= γ` or a left-prefix `δ` of a production rhs.
+- `(i, j)` are the left and right input extents.
+- `k` is the *pivot*: the split point between the two halves of the binary tree.
+
+The BSR set is built incrementally during parsing by the `ADD()` function from the pre-computed `χ₁` and `χ₂` sets in the table. Pre-computation is what gives the algorithm its efficiency advantage over classical Earley.
+
+### SPPF
+
+The **Shared Packed Parse Forest** is an efficient graph representation of all derivation trees. It uses four node types:
+
+| Type | Represents |
+|---|---|
+| `symbol(label, left, right)` | A nonterminal spanning `[left, right)` |
+| `leaf(label, left, right)` | A terminal token at position `left` |
+| `intermediate(label, left, right)` | A partial (binarised) rhs prefix |
+| `packed(label, pivot)` | One specific derivation at a given split point |
+
+Symbol and intermediate nodes with **multiple packed children** represent ambiguity: each packed child is an alternative derivation.
+
+---
+
+## Algorithms
+
+### `recET()` — Recogniser (Section 5.2)
+
+The fastest mode. Uses the recogniser table `𝒯_Γ` (no BSR components) and returns only accept/reject.
+
+```
+recET(𝒯_Γ, a₁…aₙ):
+  𝔼₀ = R₀ = {(0, 0)}
+  for j = 0 to n:
+    while Rⱼ ≠ ∅:
+      remove (p, k) from Rⱼ
+      if k ≠ j:                                    // completer
+        for X ∈ A_{p, aⱼ₊₁}:
+          for (h, i) ∈ 𝔼ₖ: ADD(h, X, i, j)
+      ADD(p, ε, j, j)                              // ε-transition
+      if j < n: ADD(p, aⱼ₊₁, k, j+1)             // scanner
+  accept iff some (p, 0) ∈ 𝔼ₙ with G_p accepting
+```
+
+### `simpleET()` — SL Parser (Section 7.1.1)
+
+Extends `recET()` by building the BSR set. `ADD()` now takes a pivot `k` and populates `Υ` from `χ₁` and `χ₂`.
+
+### `parseET()` — EL Parser (Section 7.3)
+
+Uses the EL table and replaces `A_{p, aⱼ₊₁}` with `rLHS(p)` guarded by `aⱼ₊₁ ∈ SELECT(p)`. The scanner is similarly guarded. This eliminates false completions on grammars where the FOLLOW approximation is too coarse.
+
+---
+
+## Public API
+
+### `EarleyTableParser`
+
+```swift
+public final class EarleyTableParser {
+
+    // Pre-computed components (available for inspection)
+    public let grammar:  Grammar
+    public let nfa:      EarleyNFA
+    public let slTable:  SLParseTable
+    public let elTable:  ELParseTable
+
+    // Select algorithm: false = SL (default), true = EL
+    public var useExtendedLookahead: Bool
+
+    public init(grammar: Grammar, useExtendedLookahead: Bool = false)
+
+    // Parse pre-tokenised input directly
+    public func parse(tokens: [String]) throws -> ParseResult
 }
 ```
 
-## API Reference
-
-### Core Functions
-
-#### `buildEarleyNFA(grammar:)`
-Construct the Earley NFA (state graph) for a grammar.
+### `DeterministicParser` (one tree)
 
 ```swift
-let nfa = buildEarleyNFA(grammar: myGrammar)
-print("NFA states: \(nfa.stateCount)")
-```
-
-#### `buildRecogniserTable(nfa:grammar:)`
-Build the recogniser table used by `recET()` for quick accept/reject decisions.
-
-```swift
-let table = buildRecogniserTable(nfa: nfa, grammar: grammar)
-let accepted = recET(table: table, input: ["a", "b", "c"])
-```
-
-#### `buildSLParseTable(nfa:grammar:)`
-Build the SL (Simple Lookahead) parse table for full parsing with BSR generation.
-
-```swift
-let slTable = buildSLParseTable(nfa: nfa, grammar: grammar)
-let result = simpleET(table: slTable, input: ["a", "b", "c"])
-```
-
-#### `recET(table:input:)`
-The recogniser from Section 5.2 of Scott & Johnstone (2026). Returns `true` if the input is in the grammar's language.
-
-```swift
-let accepted = recET(table: table, input: ["a", "b"])
-```
-
-#### `simpleET(table:input:)`
-The full parser from Section 7.1.1. Returns a `EarleyParseResult` with BSR set and Earley sets.
-
-```swift
-let result = simpleET(table: table, input: ["a", "b", "c"])
-if result.accepted {
-    let bsr = result.bsrSet  // All derivations packed as BSR elements
+extension EarleyTableParser: DeterministicParser {
+    public func syntaxTree(for string: String) throws -> ParseTree
+    public func recognizes(_ string: String) -> Bool
 }
 ```
 
-#### `buildSPPF(from:grammar:tokens:)`
-Construct an SPPF graph from a BSR set for efficient storage and derivation extraction.
+### `GeneralizedParser` (all trees)
 
 ```swift
-let sppf = buildSPPF(from: result.bsrSet, grammar: grammar, tokens: tokens)
-```
-
-#### `extractDerivation(from:grammar:tokens:)`
-Extract a single derivation tree as a readable string representation.
-
-```swift
-if let derivation = extractDerivation(from: bsrSet, grammar: grammar, tokens: tokens) {
-    print(derivation)
-    // Output: "(S → (A → a) (S → a b))"
+extension EarleyTableParser: GeneralizedParser {
+    public func parse(_ string: String) throws -> ParseResult
+    public func allSyntaxTrees(for string: String) throws -> [ParseTree]
 }
 ```
 
-### Data Types
-
-#### `EarleyParseResult`
-Result of `simpleET()`:
-
-- `accepted: Bool` — Whether the input was accepted
-- `bsrSet: Set<BSRElement>` — All binarised derivation subtrees
-- `earleySets: [Set<EarleyPair>]` — The Earley sets 𝔼₀ … 𝔼_n
-- `sppfGraph: SPPFGraph?` — The SPPF graph (if constructed)
-- `hasAmbiguity: Bool` — True if multiple distinct derivations exist
-
-#### `BSRElement`
-Binary Subset Representation element `(Ω, i, k, j)` representing a binarised derivation:
-
-- `omega: BSRComponent` — The grammar component (production or prefix)
-- `leftExtent: Int` — Start position in input
-- `pivot: Int` — Split point for binarisation
-- `rightExtent: Int` — End position in input
-
-#### `SPPFGraph`
-Shared Packed Parse Forest graph. Nodes include:
-
-- `.leaf` — Terminal tokens
-- `.symbol` — Non-terminal symbol nodes
-- `.intermediate` — Partial derivation nodes
-- `.packed` — Specific production applications
-
-### Grammar Definition
-
-This library uses the `Grammar` package from [`hakkabon/Grammar`](https://github.com/hakkabon/Grammar).
+### `ParseResult`
 
 ```swift
-import Grammar
-
-// Terminal symbols
-let a = .terminal(Terminal(string: "a"))
-let b = .terminal(Terminal(string: "b"))
-
-// Non-terminal symbols
-let S = .nonTerminal(NonTerminal(name: "S"))
-let A = .nonTerminal(NonTerminal(name: "A"))
-
-// Epsilon (empty) production
-let eps = .terminal(.meta(.eps))
-
-// Define production rules
-let productions: [Production] = [
-    Production(goal: NonTerminal(name: "S"), rule: [A, S, b]),
-    Production(goal: NonTerminal(name: "S"), rule: [a]),
-    Production(goal: NonTerminal(name: "A"), rule: [a, A]),
-    Production(goal: NonTerminal(name: "A"), rule: [])  // A → ε
-]
-
-// Create grammar
-let grammar = Grammar(
-    productions: productions,
-    start: NonTerminal(name: "S"),
-    lexicalTokens: [:]
-)
+public struct ParseResult {
+    public let accepted:   Bool
+    public let bsrSet:     Set<BSRElement>
+    public let earleySets: [Set<EarleyPair>]
+    public let sppfGraph:  SPPFGraph?      // non-nil after EarleyTableParser.parse()
+    public var hasAmbiguity: Bool
+}
 ```
 
-## Examples
+### Low-level free functions
 
-### Example 1: Simple Grammar Γ₁
-**Grammar**: `S ::= A S b | a` , `A ::= a A | ε`
+These are available for embedding in larger systems that manage their own tables.
 
 ```swift
-let gamma1 = Grammar(
-    productions: [
-        Production(goal: NonTerminal(name: "S"), rule: [.nonTerminal(NonTerminal(name: "A")), .nonTerminal(NonTerminal(name: "S")), .terminal(Terminal(string: "b"))]),
-        Production(goal: NonTerminal(name: "S"), rule: [.terminal(Terminal(string: "a"))]),
-        Production(goal: NonTerminal(name: "A"), rule: [.terminal(Terminal(string: "a")), .nonTerminal(NonTerminal(name: "A"))]),
-        Production(goal: NonTerminal(name: "A"), rule: [])
-    ],
-    start: NonTerminal(name: "S"),
-    lexicalTokens: [:]
-)
+// NFA & table construction
+func buildEarleyNFA(grammar: Grammar) -> EarleyNFA
+func buildRecogniserTable(nfa: EarleyNFA, grammar: Grammar) -> RecogniserTable
+func buildSLParseTable(nfa: EarleyNFA, grammar: Grammar) -> SLParseTable
+func buildELParseTable(nfa: EarleyNFA, grammar: Grammar) -> ELParseTable
 
-let nfa = buildEarleyNFA(grammar: gamma1)
-let table = buildSLParseTable(nfa: nfa, grammar: gamma1)
-let result = simpleET(table: table, input: ["a", "a", "b"])
+// Parsing
+func recET(table: RecogniserTable, input: [String]) -> Bool
+func simpleET(table: SLParseTable, input: [String]) -> ParseResult
+func parseET(table: ELParseTable, input: [String]) -> ParseResult
 
-// result.accepted == true
-// parses "aab" as: A→a, S→a, S→ASb with A→ε
+// SPPF construction
+func buildSPPF(from bsrSet: Set<BSRElement>, grammar: Grammar, tokens: [String]) -> SPPFGraph
+
+// Debugging
+func extractDerivation(from bsrSet: Set<BSRElement>, grammar: Grammar, tokens: [String]) -> String?
 ```
 
-### Example 2: Ambiguous Grammar Γ₃
-**Grammar**: `S ::= S S S | S S | b`
+---
 
-```swift
-let gamma3 = Grammar(
-    productions: [
-        Production(goal: NonTerminal(name: "S"), rule: [
-            .nonTerminal(NonTerminal(name: "S")),
-            .nonTerminal(NonTerminal(name: "S")),
-            .nonTerminal(NonTerminal(name: "S"))
-        ]),
-        Production(goal: NonTerminal(name: "S"), rule: [
-            .nonTerminal(NonTerminal(name: "S")),
-            .nonTerminal(NonTerminal(name: "S"))
-        ]),
-        Production(goal: NonTerminal(name: "S"), rule: [.terminal(Terminal(string: "b"))])
-    ],
-    start: NonTerminal(name: "S"),
-    lexicalTokens: [:]
-)
+## Bugs Fixed
 
-let nfa = buildEarleyNFA(grammar: gamma3)
-let table = buildSLParseTable(nfa: nfa, grammar: gamma3)
-let result = simpleET(table: table, input: ["b", "b", "b"])
+The following issues were corrected relative to the initial implementation:
 
-// result.accepted == true
-// result.hasAmbiguity == true (many different parse trees)
-// result.bsrSet.count > 1 (multiple derivations)
-```
+1. **`simpleET()` initialisation** — the seed pair `(0, 0)` must pass through the full main loop so that the ε-transition of state 0 is processed and any BSR elements from `χ₁`/`χ₂` of that first transition are recorded. Previously the pair was inserted directly, bypassing `ADD()`.
 
-### Example 3: Grammar with Epsilon
-**Grammar**: `S ::= A b | ε` , `A ::= a | ε`
+2. **`bsrSetIsAmbiguous` false positives** — the heuristic was counting prefix BSR elements, which appear even in unambiguous parses. Fixed to count only complete `production` elements, and to require a differing pivot, not merely a second occurrence.
 
-```swift
-let epsGrammar = Grammar(
-    productions: [
-        Production(goal: NonTerminal(name: "S"), rule: [.nonTerminal(NonTerminal(name: "A")), .terminal(Terminal(string: "b"))]),
-        Production(goal: NonTerminal(name: "S"), rule: []),
-        Production(goal: NonTerminal(name: "A"), rule: [.terminal(Terminal(string: "a"))]),
-        Production(goal: NonTerminal(name: "A"), rule: [])
-    ],
-    start: NonTerminal(name: "S"),
-    lexicalTokens: [:]
-)
+3. **`buildSPPF` multi-symbol left child** — productions with more than one symbol on the rhs were silently dropping the left child. Fixed to always create an intermediate SPPF node spanning `[leftExtent…pivot]`.
 
-let nfa = buildEarleyNFA(grammar: epsGrammar)
-let table = buildSLParseTable(nfa: nfa, grammar: epsGrammar)
+4. **Intermediate node dot position** — intermediate nodes were labelled with `syms.count - 1` as the dot position. The correct value is the *prefix length* (number of symbols already consumed), which for a prefix of length k is `k`, not `k - 1`.
 
-// Parse empty string
-let emptyResult = simpleET(table: table, input: [])
-// emptyResult.accepted == true
+5. **`reconstructChildren` incomplete** — multi-symbol productions returned a bare string extent rather than recursing into the BSR. Replaced with a full recursive descent over the BSR set that handles any production shape.
 
-// Parse "b"
-let bResult = simpleET(table: table, input: ["b"])
-// bResult.accepted == true
-```
+---
 
-## Algorithm Details
+## Improvements
 
-### 1. Earley NFA Construction (Section 4.3)
-The NFA is built using Breadth-First Search starting from `G₀ = calls(S_LNcall)`, where:
-- `calls(M)` computes the smallest set of slots closed under left-null-call transitions
-- `move(M, x)` computes states reachable by consuming symbol x
+- **`EarleyTableParser` facade** — previously, the only API was free functions. The new `EarleyTableParser` class pre-computes both tables at `init` time and conforms to `DeterministicParser` and `GeneralizedParser`.
+- **`allSyntaxTrees(for:)`** — full combinatorial enumeration of every distinct derivation tree via cross-product expansion over packed SPPF nodes. De-duplicates by structural equality.
+- **`parseET()` + EL table** — extended-lookahead algorithm from Section 7.3 is now fully implemented. Toggle with `useExtendedLookahead = true`.
+- **`sppfGraph` always populated** — `ParseResult.sppfGraph` is always non-nil after a call to `EarleyTableParser.parse()`.
+- **`hasAmbiguity` now SPPF-based** — when the SPPF is available, ambiguity is detected by counting packed-node children rather than using the BSR heuristic.
 
-### 2. Recogniser Table Traversal (Section 5.2)
-The `recET()` algorithm uses three actions per Earley set:
-1. **Completer** (k ≠ j): Propagate completed non-terminals using FOLLOW lookahead
-2. **ε-transition**: Handle epsilon productions
-3. **Scanner** (j < n): Match next input token
+---
 
-### 3. Simple Lookahead Parser (Section 7.1.1)
-The `simpleET()` extension adds BSR generation:
-- Maintains global BSR set Υ alongside Earley sets
-- Populates Υ with BSR elements `(Ω, i, k, j)` during ADD operations
-- χ₁ contains direct transition components
-- χ₂ contains ε-related nullable contributions
+## Dependencies
 
-### 4. Binary Subset Representation
-BSR elements pack derivations binarised as:
-- `.production(Production)` — Complete production applications
-- `.prefix(NonTerminal, [Symbol])` — Partial production prefixes
+| Package | Purpose |
+|---|---|
+| [hakkabon/Grammar](https://github.com/hakkabon/Grammar) | `Grammar`, `Production`, `NonTerminal`, `Terminal`, `Symbol` types |
+| [hakkabon/GrammarTokenizer](https://github.com/hakkabon/GrammarTokenizer) | Lexical tokenization |
+| [hakkabon/GrammarDiagram](https://github.com/hakkabon/GrammarDiagram) | Grammar diagram export |
 
-### 5. Shared Packed Parse Forest
-SPPF graphs store all derivations compactly using:
-- **Packed nodes** for alternative productions
-- **Intermediate nodes** for shared prefixes
-- **Symbol nodes** for non-terminals
-- **Leaf nodes** for terminal tokens
+---
 
-## Testing
-
-Run the test suite:
+## Running the Tests
 
 ```bash
 swift test
 ```
 
-Run the demo executable:
+## Running the Demo
 
 ```bash
-swift run demo
+swift run demo          # run all three paper examples
+swift run demo --nfa    # also print NFA state tables
 ```
 
-The demo exercises all example grammars from the paper (Γ₁, Γ₂, Γ₃) and prints:
-- NFA state tables
-- Recogniser results
-- Parser results with BSR element counts
-- FOLLOW set analysis
-- Ambiguity detection
-
-## Installation
-
-Add to your `Package.swift`:
-
-```swift
-dependencies: [
-    .package(url: "https://github.com/hakkabon/Grammar.git", branch: "main"),
-    .package(url: "https://github.com/your-username/Earley-TableParser.git", from: "1.0.0")
-]
-```
-
-Then add `Earley-TableParser` to your target's dependencies.
-
-## License
-
-MIT License. See `LICENSE` file.
+---
 
 ## References
 
-1. **Scott & Johnstone (2026)** - *Earley Table Traversing Parser*, Science of Computer Programming 247, 103335. https://doi.org/10.1016/j.scico.2025.103335
-
-2. **Tomita (1987)** - *An Efficient Parsing Algorithm for Arbitrary Context-Free Grammars*
-
-3. **Perfect & Scott (2007)** - *Binarisation of Syntax Trees for Efficient Storage and Extraction*
-
-4. **Hakkabon Grammar** - https://github.com/hakkabon/Grammar
+- Scott, E. & Johnstone, A. (2026). *Earley Table Traversing Parsers*. Science of Computer Programming **247**, 103335. https://doi.org/10.1016/j.scico.2025.103335
+- Earley, J. (1970). An efficient context-free parsing algorithm. *Communications of the ACM* **13**(2), 94–102.
+- Tomita, M. (1987). An efficient augmented-context-free parsing algorithm. *Computational Linguistics* **13**, 31–46.
+- Scott, E. & Johnstone, A. (2013). BSR parsing. *Electronic Notes in Theoretical Computer Science* **253**, 17–51.
