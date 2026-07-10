@@ -278,6 +278,12 @@ func buildSPPF(from bsrSet: Set<BSRElement>, grammar: Grammar, tokens: [String])
 
 // Debugging
 func extractDerivation(from bsrSet: Set<BSRElement>, grammar: Grammar, tokens: [String]) -> String?
+
+// Lexer integration (ParserTokenizer.swift) — bridges any TokenStream (from
+// the Lexer package) to the [String] tokens simpleET() expects.
+func tokenStrings<S: TokenStream>(from stream: S) throws -> [String]
+func tokenizeAndParse<S: TokenStream>(stream: S, table: SLParseTable) throws -> ParseResult
+func tokenizeAndParse(input: String, table: SLParseTable, symbols: Set<String>, keywords: Set<String>) throws -> ParseResult
 ```
 
 ---
@@ -313,7 +319,7 @@ The following issues were corrected relative to the initial implementation:
 | Package | Purpose |
 |---|---|
 | [hakkabon/Grammar](https://github.com/hakkabon/Grammar) | `Grammar`, `Production`, `NonTerminal`, `Terminal`, `Symbol` types |
-| [hakkabon/GrammarTokenizer](https://github.com/hakkabon/GrammarTokenizer) | Lexical tokenization |
+| [hakkabon/Lexer](https://github.com/hakkabon/Lexer) | `TokenStream` protocol + DFA/`GrammarTokenizer` front ends (see `ParserTokenizer.swift`) |
 | [hakkabon/GrammarDiagram](https://github.com/hakkabon/GrammarDiagram) | Grammar diagram export |
 
 ---
