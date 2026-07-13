@@ -35,6 +35,18 @@ public struct RecogniserTable {
     let entries: [[String: RecTableEntry]]   // indexed by state, keyed by symbol key
     let nfa: EarleyNFA
 
+    /// Every grammar terminal that isn't `.string` — i.e. a `.regularExpression`,
+    /// `.characterRange`, or `.stringList` terminal, ordinarily one resolved
+    /// from a `lexical { }` declaration — paired with the same `terminalKey(_:)`
+    /// string its table entries are actually stored under.
+    ///
+    /// `terminalKey(_:)` on a pattern terminal returns the *pattern's own*
+    /// text (a regex's source via `.description`, a range's bounds, ...), not
+    /// anything a concrete input token could ever equal — so `entries[p][tok]`
+    /// can never find those columns by a direct string lookup, no matter what
+    /// the token actually is. `resolveKey(forToken:)` is the bridge.
+    let patternTerminals: [(terminal: Terminal, key: String)]
+
     public var stateCount: Int { entries.count }
 
     /// Look up entry for state p and symbol key x.
@@ -51,6 +63,24 @@ public struct RecogniserTable {
     /// Next state from p on symbol key x (nil = ⊥).
     public func nextState(from p: Int, symbol x: String) -> Int? {
         entry(state: p, symbol: x)?.nextState
+    }
+
+    /// Resolves a raw input token's own literal text to the key its matching
+    /// table column is actually stored under.
+    ///
+    /// For an ordinary `.string` grammar terminal this is a no-op (the token's
+    /// own text already is the column key). For a `.regularExpression`/
+    /// `.characterRange`/`.stringList` grammar terminal, this checks `token`
+    /// against each pattern with `Terminal.matches(_:)` (the asymmetric
+    /// pattern-vs-lexeme check — see `Terminal.matches(_:)` in the Grammar
+    /// package) and, on a match, returns that pattern's own key instead.
+    /// Falls back to `token` unchanged when nothing matches, so a genuinely
+    /// invalid token still correctly misses every column.
+    public func resolveKey(forToken token: String) -> String {
+        for (terminal, key) in patternTerminals where terminal.matches(.string(token)) {
+            return key
+        }
+        return token
     }
 }
 
@@ -98,7 +128,7 @@ public func buildRecogniserTable(nfa: EarleyNFA, grammar: Grammar) -> Recogniser
         entries[p][epsilonKey] = RecTableEntry(nextState: epsNext, completedNTs: [])
     }
 
-    return RecogniserTable(entries: entries, nfa: nfa)
+    return RecogniserTable(entries: entries, nfa: nfa, patternTerminals: collectPatternTerminals(for: grammar))
 }
 
 // MARK: - recET() Recogniser
@@ -114,8 +144,15 @@ public func recET(table: RecogniserTable, input tokens: [String]) -> Bool {
     let n = tokens.count
 
     // a(j) = tokens[j-1] for j in 1…n;  a(n+1) = "$"
+    //
+    // Resolved via table.resolveKey(forToken:) rather than returned raw: a
+    // token's own literal text (e.g. "42") only equals a table column key
+    // directly for plain .string grammar terminals. A .regularExpression/
+    // .characterRange/.stringList terminal's column is keyed by the
+    // *pattern's* own text, so matching those requires this indirection —
+    // see RecogniserTable.resolveKey(forToken:).
     func a(_ j: Int) -> String {
-        j >= 1 && j <= n ? tokens[j - 1] : eofKey
+        j >= 1 && j <= n ? table.resolveKey(forToken: tokens[j - 1]) : eofKey
     }
 
     var E = [Set<EarleyPair>](repeating: [], count: n + 1)
@@ -201,6 +238,20 @@ func terminalKey(_ t: Terminal) -> String {
 }
 
 func nonTerminalKey(_ nt: NonTerminal) -> String { nt.name }
+
+/// Every grammar terminal that isn't `.string` (i.e. resolved from a
+/// `lexical { }` regex/range/list declaration), paired with its `terminalKey(_:)`
+/// string — shared by `RecogniserTable` and `SLParseTable`'s `resolveKey(forToken:)`.
+/// See `RecogniserTable.patternTerminals`'s doc comment for why this exists.
+func collectPatternTerminals(for grammar: Grammar) -> [(terminal: Terminal, key: String)] {
+    grammar.terminals.compactMap { terminal in
+        switch terminal {
+        case .string, .meta: return nil
+        case .characterRange, .stringList, .regularExpression:
+            return (terminal, terminalKey(terminal))
+        }
+    }
+}
 
 /// The dictionary key for the epsilon column.
 let epsilonKey: String = MetaTerminal.eps.rawValue   // "ε"
