@@ -77,7 +77,7 @@ public struct RecogniserTable {
     /// Falls back to `token` unchanged when nothing matches, so a genuinely
     /// invalid token still correctly misses every column.
     public func resolveKey(forToken token: String) -> String {
-        for (terminal, key) in patternTerminals where terminal.matches(.string(token)) {
+        for (terminal, key) in patternTerminals where terminal.matches(.string(string: token)) {
             return key
         }
         return token

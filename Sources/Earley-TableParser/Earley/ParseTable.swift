@@ -174,7 +174,7 @@ public struct SLParseTable {
     /// matching table column (which may be a regex/range/list pattern's own
     /// text, not the token's) is actually stored under.
     public func resolveKey(forToken token: String) -> String {
-        for (terminal, key) in patternTerminals where terminal.matches(.string(token)) {
+        for (terminal, key) in patternTerminals where terminal.matches(.string(string: token)) {
             return key
         }
         return token
