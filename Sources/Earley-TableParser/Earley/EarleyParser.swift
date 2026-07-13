@@ -49,8 +49,12 @@ public func simpleET(table: SLParseTable, input tokens: [String]) -> ParseResult
     let n = tokens.count
 
     // a(j) = tokens[j-1] for j in 1…n;  a(n+1) = "$"
+    //
+    // Resolved via table.resolveKey(forToken:) — see RecogniserTable.resolveKey(forToken:)'s
+    // doc comment (SLParseTable's version does the same thing) for why a raw
+    // token's own literal text isn't always the right table column key.
     func a(_ j: Int) -> String {
-        j >= 1 && j <= n ? tokens[j - 1] : eofKey
+        j >= 1 && j <= n ? table.resolveKey(forToken: tokens[j - 1]) : eofKey
     }
 
     var E = [Set<EarleyPair>](repeating: [], count: n + 1)

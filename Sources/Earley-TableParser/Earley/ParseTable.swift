@@ -152,9 +152,32 @@ public struct SLParseTable {
     public let nfa: EarleyNFA
     public let grammar: Grammar
 
+    /// See `RecogniserTable.patternTerminals`'s doc comment — same purpose,
+    /// same reason it's needed, computed once here from `grammar` rather than
+    /// threaded in separately.
+    let patternTerminals: [(terminal: Terminal, key: String)]
+
+    public init(entries: [[String: SLTableEntry]], nfa: EarleyNFA, grammar: Grammar) {
+        self.entries = entries
+        self.nfa = nfa
+        self.grammar = grammar
+        self.patternTerminals = collectPatternTerminals(for: grammar)
+    }
+
     public func entry(state p: Int, symbol x: String) -> SLTableEntry? {
         guard p < entries.count else { return nil }
         return entries[p][x]
+    }
+
+    /// See `RecogniserTable.resolveKey(forToken:)`'s doc comment — identical
+    /// purpose: bridges a raw input token's literal text to the key its
+    /// matching table column (which may be a regex/range/list pattern's own
+    /// text, not the token's) is actually stored under.
+    public func resolveKey(forToken token: String) -> String {
+        for (terminal, key) in patternTerminals where terminal.matches(.string(token)) {
+            return key
+        }
+        return token
     }
 }
 
