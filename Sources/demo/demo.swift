@@ -12,6 +12,7 @@ import ArgumentParser
 import Foundation
 import Earley_TableParser
 import Grammar
+import Parser
 
 // MARK: - Grammar construction helpers
 

@@ -11,10 +11,14 @@
 
 import Foundation
 import Grammar
+import Parser
 
 /// A node label used for intermediate and packed nodes in the SPPF.
 /// It identifies a grammar slot  goal ::= symbols[0…] · symbols[position…]
-public struct NodeLabel: Codable {
+///
+/// Already carries exactly what `SPPFLabel` needs — `goal`, `symbols`, and
+/// `position` — so conformance is free.
+public struct NodeLabel: Codable, SPPFLabel {
     /// The LHS nonterminal (head of the production).
     public let goal: NonTerminal
     /// The RHS symbols of the production this label refers to.

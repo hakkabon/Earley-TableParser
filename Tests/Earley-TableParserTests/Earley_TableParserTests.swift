@@ -10,6 +10,7 @@ import Testing
 @testable import Earley_TableParser
 import Foundation
 import Grammar
+import Parser
 
 // MARK: - Grammar Helpers
 
@@ -355,8 +356,12 @@ struct EarleyParserTests {
 
         #expect(result.accepted)
 
+        // `NodeLabel.goal` is a non-optional `NonTerminal`, so every BSR
+        // element necessarily has an LHS — this test now checks that the
+        // dot position is always a valid index into the label's symbols.
         for elem in result.bsrSet {
-            #expect(elem.omega.lhsNonterminal != nil, "BSR component should have LHS")
+            #expect(elem.label.position >= 0 && elem.label.position <= elem.label.symbols.count,
+                     "BSR label's dot position should be within [0, symbols.count]")
         }
     }
 

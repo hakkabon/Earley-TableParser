@@ -13,6 +13,7 @@
 
 import Foundation
 import Grammar
+import Parser
 import Lexer
 
 /// Extracts the ACTION/GOTO-table key for each position in `stream`: the
