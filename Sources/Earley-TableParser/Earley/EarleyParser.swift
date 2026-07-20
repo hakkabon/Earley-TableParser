@@ -19,6 +19,38 @@ import Grammar
 import Parser
 
 
+public final class EarleyTableParser {
+
+    // Pre-computed components (available for inspection)
+    public let grammar: Grammar
+    public let nfa: EarleyNFA
+    public let slTable: SLParseTable
+    public let elTable: ELParseTable
+
+    // Select algorithm: false = SL (default), true = EL
+    public var useExtendedLookahead: Bool
+
+    public init(grammar: Grammar, useExtendedLookahead: Bool = false) {
+        nfa = buildEarleyNFA(grammar: grammar)
+        (slTable, elTable) = useExtendedLookahead ?
+        (buildSLParseTable(nfa: nfa, grammar: grammar), ELParseTable()) :
+        (SLParseTable(), buildELParseTable(nfa: nfa, grammar: grammar))
+    }
+
+    // Parse pre-tokenised input directly
+    public func parse(tokens: [String]) throws -> EarleyTableParseResult {
+        
+    }
+}
+
+public struct ELParseTable {
+    init() {}
+}
+
+public func buildELParseTable(nfa: EarleyNFA, grammar: Grammar) -> ELParseTable {
+    return ELParseTable()
+}
+
 /// Heuristic ambiguity check on the raw BSR set:
 /// if two distinct BSR elements share the same (LHS, leftExtent, rightExtent)
 /// the parse is ambiguous.

@@ -1,5 +1,5 @@
 //
-//  GeneralizedParser.swift
+//  ParseResult.swift
 //  Earley-TableParser
 //
 //  Created by Ulf Akerstedt-Inoue on 2023/08/11.
