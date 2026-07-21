@@ -1,28 +1,26 @@
 // ParserTokenizer.swift
 // Bridges a `TokenStream` (from the Lexer module) to the `[String]` token
-// arrays `simpleET`/`buildSPPF`/`extractDerivation` (EarleyParser.swift) work
-// with.
+// arrays that simpleET / parseET / buildSPPF / extractDerivation work with.
 //
-// `simpleET` (Section 7.1, Scott & Johnstone) is parameterised purely on
-// `[String]` ACTION/GOTO-table keys and integer token-index extents — it
-// never needs a `Range<String.Index>` — so extracting each position's exact
-// source text is the full extent of what any `TokenStream` front end needs
-// to supply here. Both the DFA-driven `LexerTokenStream` (built via a
-// `LexerBuilder` bootstrapped from a `GrammarVocabulary`) and the
-// hand-written `TokenizerStream` work identically through this bridge.
+// BUG 8 fix: tokenizeAndParse previously returned `ParseResult` (the generic
+// Parser-module type).  It now returns `EarleyTableParseResult` — the correct
+// concrete type from this package.  The old signature was wrong because
+// `ParseResult<Label>` has no `earleySets` field, and callers that needed
+// Earley-set data had no way to access it.
+//
+// tokenizeAndParseGeneral() is a new overload that returns the generic
+// ParseResult<NodeLabel> when the caller needs GeneralizedParser semantics
+// without going through the EarleyTableParser facade.
 
 import Foundation
 import Grammar
 import Parser
 import Lexer
 
-/// Extracts the ACTION/GOTO-table key for each position in `stream`: the
-/// exact source text of its range, with `Terminal.meta(.eof)` dropped (the
-/// table lookup functions in `EarleyParser.swift` synthesise their own `"$"`
-/// end-of-input key via `eofKey`/`a(n+1)`, so no explicit sentinel is
-/// appended here).
+/// Extract per-position ACTION/GOTO table keys from `stream`.
+/// MetaTerminal.eof tokens are dropped: the parser synthesises its own "$".
 ///
-/// - Throws: whatever error `stream.terminal(at:)` throws for a lexical failure.
+/// - Throws: whatever error `stream.terminal(at:)` raises for a lexical failure.
 public func tokenStrings<S: TokenStream>(from stream: S) throws -> [String] {
     var tokens: [String] = []
     tokens.reserveCapacity(stream.count)
@@ -34,29 +32,44 @@ public func tokenStrings<S: TokenStream>(from stream: S) throws -> [String] {
     return tokens
 }
 
-/// Tokenizes `stream` and runs `simpleET` against `table`.
+/// Tokenise `stream` and run `simpleET` against `table`.
 ///
-/// - Parameter stream: A positioned sequence of tokens, each resolvable to a
-///   `Terminal` and a source `Range<String.Index>` — e.g. a `LexerTokenStream`
-///   or a `TokenizerStream`.
-public func tokenizeAndParse<S: TokenStream>(stream: S, table: SLParseTable) throws -> ParseResult {
+/// BUG 8 fix: return type corrected to `EarleyTableParseResult`.
+public func tokenizeAndParse<S: TokenStream>(
+    stream: S,
+    table: SLParseTable
+) throws -> EarleyTableParseResult {       // BUG 8 fix: was ParseResult
     let tokens = try tokenStrings(from: stream)
-    guard !tokens.isEmpty else {
-        return ParseResult(accepted: false, bsrSet: [], earleySets: [], sppfGraph: nil)
-    }
     return simpleET(table: table, input: tokens)
 }
 
-/// Tokenizes `input` with a `TokenizerStream` configured from `symbols`/
-/// `keywords`, then runs `simpleET` against `table`.
+/// Tokenise `input` with a `TokenizerStream` and run `simpleET` against `table`.
+///
+/// BUG 8 fix: return type corrected to `EarleyTableParseResult`.
 public func tokenizeAndParse(
     input: String,
     table: SLParseTable,
-    symbols: Set<String> = [],
+    symbols:  Set<String> = [],
     keywords: Set<String> = []
-) throws -> ParseResult {
+) throws -> EarleyTableParseResult {       // BUG 8 fix: was ParseResult
     try tokenizeAndParse(
         stream: TokenizerStream(source: input, symbols: symbols, keywords: keywords),
         table: table
     )
+}
+
+/// Tokenise `stream`, run `simpleET`, build SPPF, and return the generic
+/// `ParseResult<NodeLabel>` from the Parser module (GeneralizedParser semantics).
+public func tokenizeAndParseGeneral<S: TokenStream>(
+    stream: S,
+    table: SLParseTable,
+    grammar: Grammar
+) throws -> ParseResult<NodeLabel> {
+    let tokens = try tokenStrings(from: stream)
+    let raw    = simpleET(table: table, input: tokens)
+    guard raw.accepted else {
+        return ParseResult(isSuccessful: false, bsr: [], sppfGraph: nil)
+    }
+    let sppf = buildSPPF(from: raw.bsrSet, grammar: grammar, tokens: tokens)
+    return ParseResult(isSuccessful: true, bsr: raw.bsrSet, sppfGraph: sppf)
 }

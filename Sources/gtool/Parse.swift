@@ -79,7 +79,7 @@ extension GrammarTool {
                     print("Parse successful!")
                     print("Has ambiguity: \(result.hasAmbiguity)")
                     result.bsr.log()
-                    for entry in result.bsr.sorted() {
+                    for entry in result.bsr.sorted(by: { $0.description < $1.description }) {
                         print("  \(entry)")
                     }
                     if let graph = result.sppfGraph {
