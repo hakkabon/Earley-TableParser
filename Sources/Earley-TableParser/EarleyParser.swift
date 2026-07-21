@@ -40,8 +40,8 @@
 //    child). Fixed to mirror Parser.GeneralizedParser.ParseResult: only
 //    .symbol and .intermediate nodes with more than one packed child count.
 //
-// 8. tokenizeAndParse return type – was ParseResult (Parser module generic)
-//    instead of EarleyTableParseResult. Corrected.
+// 8. Public parsing helpers share Parser.ParseResult<NodeLabel>; Earley chart
+//    state remains an internal traversal detail.
 //
 // 9. DeterministicParser / GeneralizedParser conformance – was entirely
 //    absent. Implemented in EarleyTableParser.swift (this file).
@@ -93,7 +93,7 @@ private struct AmbiguityKey: Hashable {
 // MARK: - simpleET()
 
 /// The simple-lookahead Earley Table Traversing Parser (Section 7.1.1).
-public func simpleET(table: SLParseTable, input tokens: [String]) -> EarleyTableParseResult {
+func simpleET(table: SLParseTable, input tokens: [String]) -> TableTraversalResult {
     let n = tokens.count
 
     func a(_ j: Int) -> String {
@@ -157,7 +157,7 @@ public func simpleET(table: SLParseTable, input tokens: [String]) -> EarleyTable
         element.label.isCompleted && element.label.goal == table.grammar.start &&
         element.leftExtent == 0 && element.rightExtent == n
     }
-    return EarleyTableParseResult(accepted: accepted, bsrSet: Upsilon, earleySets: E, sppfGraph: nil)
+    return TableTraversalResult(accepted: accepted, bsrSet: Upsilon, earleySets: E)
 }
 
 // MARK: - BSR → SPPF construction
@@ -484,16 +484,15 @@ public final class EarleyTableParser {
     // MARK: - Core parse
 
     /// Run the parser on a pre-tokenised input and return an
-    /// `EarleyTableParseResult` that exposes the BSR set, Earley sets, and
-    /// (on success) the SPPF graph.
+    /// shared Parser-module result containing the BSR set and SPPF graph.
     ///
     /// BUG 6 fix: this method was previously declared but never implemented.
     ///
     /// - Parameter tokens: Pre-tokenised input as an array of terminal strings.
-    /// - Returns: `EarleyTableParseResult` on acceptance.
+    /// - Returns: `ParseResult<NodeLabel>` on acceptance.
     /// - Throws: `SyntaxError` if the input is not in the language.
-    public func parse(tokens: [String]) throws -> EarleyTableParseResult {
-        let raw: EarleyTableParseResult
+    public func parse(tokens: [String]) throws -> ParseResult<NodeLabel> {
+        let raw: TableTraversalResult
         if useExtendedLookahead {
             raw = parseET(table: elTable, input: tokens)
         } else {
@@ -509,11 +508,7 @@ public final class EarleyTableParser {
         }
 
         let sppf = buildSPPF(from: raw.bsrSet, grammar: grammar, tokens: tokens)
-        return EarleyTableParseResult(
-            accepted:   raw.accepted,
-            bsrSet:     raw.bsrSet,
-            earleySets: raw.earleySets,
-            sppfGraph:  sppf)
+        return ParseResult(isSuccessful: true, bsr: raw.bsrSet, sppfGraph: sppf)
     }
 }
 
@@ -521,7 +516,7 @@ public final class EarleyTableParser {
 
 extension EarleyTableParser: DeterministicParser {
 
-    /// Parse `string`, tokenised by whitespace, and return one parse tree.
+    /// Parse `string` through `TokenizerStream` and return one parse tree.
     ///
     /// For ambiguous grammars this returns an arbitrary but deterministic
     /// derivation.  Use `allSyntaxTrees(for:)` to get all of them.
@@ -561,11 +556,7 @@ extension EarleyTableParser: GeneralizedParser {
     /// Parse a pre-tokenized stream. The parser performs no lexical analysis;
     /// it consumes the terminals and source ranges supplied by `stream`.
     public func parse<S: TokenStream>(stream: S) throws -> ParseResult<NodeLabel> {
-        let parsed = try parseStream(stream)
-        return ParseResult(
-            isSuccessful: true,
-            bsr: parsed.result.bsrSet,
-            sppfGraph: parsed.result.sppfGraph)
+        try parseStream(stream).result
     }
 
     /// Parse `string` and return **all** parse trees, de-duplicated.
@@ -592,7 +583,7 @@ extension EarleyTableParser {
 
     private func parseStream<S: TokenStream>(
         _ stream: S
-    ) throws -> (result: EarleyTableParseResult, ranges: [Range<String.Index>]) {
+    ) throws -> (result: ParseResult<NodeLabel>, ranges: [Range<String.Index>]) {
         var tokens: [String] = []
         var ranges: [Range<String.Index>] = []
         tokens.reserveCapacity(stream.count)

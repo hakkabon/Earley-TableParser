@@ -1024,7 +1024,7 @@ struct EarleyTableParserFacadeTests {
     func parseTokensDirect() throws {
         let parser = EarleyTableParser(grammar: gamma1())
         let result = try parser.parse(tokens: ["a", "a", "b"])
-        #expect(result.accepted)
+        #expect(result.isSuccessful)
         #expect(result.sppfGraph != nil)
     }
 
@@ -1040,6 +1040,6 @@ struct EarleyTableParserFacadeTests {
     func parseTokensEL() throws {
         let parser = EarleyTableParser(grammar: gamma1(), useExtendedLookahead: true)
         let result = try parser.parse(tokens: ["a"])
-        #expect(result.accepted)
+        #expect(result.isSuccessful)
     }
 }

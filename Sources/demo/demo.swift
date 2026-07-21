@@ -108,25 +108,18 @@ func testRecogniser(grammar: Grammar, name: String,
 func testParser(grammar: Grammar, name: String,
                 cases: [(input: [String], expected: Bool)]) {
     separator("Parser — \(name)")
-    let nfa     = buildEarleyNFA(grammar: grammar)
-    let slTable = buildSLParseTable(nfa: nfa, grammar: grammar)
-    print("NFA states: \(nfa.stateCount)")
+    let parser = EarleyTableParser(grammar: grammar)
+    print("NFA states: \(parser.nfa.stateCount)")
     var pass = 0
     for (tokens, expected) in cases {
-        let result = simpleET(table: slTable, input: tokens)
-        let ok     = result.accepted == expected
+        let result = try? parser.parse(tokens: tokens)
+        let accepted = result?.isSuccessful == true
+        let ok     = accepted == expected
         let mark   = ok ? "✓" : "✗ FAIL"
         let input  = tokens.isEmpty ? "ε" : "\"\(tokens.joined())\""
-        print("  simpleET(\(input)) → \(result.accepted) [expected \(expected)] \(mark)")
-        print("    BSR elements: \(result.bsrSet.count)  ambiguous: \(result.hasAmbiguity)")
-        // Print Earley sets for short inputs.
-        if tokens.count <= 3 {
-            for (j, ej) in result.earleySets.enumerated() {
-                let pairs = ej.sorted {
-                    $0.state < $1.state || ($0.state == $1.state && $0.backIndex < $1.backIndex)
-                }.map { "(\($0.state),\($0.backIndex))" }
-                print("    𝔼_\(j) = { \(pairs.joined(separator: ", ")) }")
-            }
+        print("  parse(\(input)) → \(accepted) [expected \(expected)] \(mark)")
+        if let result {
+            print("    BSR elements: \(result.bsr.count)  ambiguous: \(result.hasAmbiguity)")
         }
         if ok { pass += 1 }
     }

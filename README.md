@@ -46,11 +46,7 @@ buildEarleyNFA()          ← computed once, O(|G|³) in grammar size
 simpleET(table:input:)    parseET(table:input:)
        │                        │
        └──────────┬─────────────┘
-                  │   EarleyTableParseResult
-                  │   ├── accepted: Bool
-                  │   ├── bsrSet:  Set<BSR<NodeLabel>>
-                  │   ├── earleySets: [Set<EarleyPair>]
-                  │   └── sppfGraph: SPPFGraph<NodeLabel>?
+                  │   internal TableTraversalResult
                   │
                   ▼
          EarleyTableParser          (public facade)
@@ -234,7 +230,7 @@ public final class EarleyTableParser {
     public init(grammar: Grammar, useExtendedLookahead: Bool = false)
 
     // Core method (both SL and EL route through here)
-    public func parse(tokens: [String]) throws -> EarleyTableParseResult
+    public func parse(tokens: [String]) throws -> ParseResult<NodeLabel>
 
     // Parser-level entry point for LexerTokenStream, TokenizerStream, or any
     // other TokenStream implementation. Terminals and source ranges are
@@ -262,17 +258,18 @@ extension EarleyTableParser: GeneralizedParser {
 }
 ```
 
-### `EarleyTableParseResult`
+### Internal traversal state
 
 ```swift
-public struct EarleyTableParseResult {
-    public let accepted:    Bool
-    public let bsrSet:      Set<BSR<NodeLabel>>
-    public let earleySets:  [Set<EarleyPair>]
-    public let sppfGraph:   SPPFGraph<NodeLabel>?   // non-nil after EarleyTableParser.parse(tokens:)
-    public var hasAmbiguity: Bool
+struct TableTraversalResult {
+    let accepted: Bool
+    let bsrSet: Set<BSR<NodeLabel>>
+    let earleySets: [Set<EarleyPair>]
 }
 ```
+
+Earley sets are retained for internal diagnostics and tests. They are not
+exposed by the public parser API.
 
 ### Low-level free functions
 
@@ -285,8 +282,8 @@ func buildELParseTable(nfa:grammar:) -> ELParseTable   // NEW
 
 // Parsing
 func recET(table:input:)             -> Bool
-func simpleET(table:input:)          -> EarleyTableParseResult
-func parseET(table:input:)           -> EarleyTableParseResult   // NEW
+func simpleET(table:input:)          -> TableTraversalResult  // internal
+func parseET(table:input:)           -> TableTraversalResult  // internal
 
 // SPPF construction
 func buildSPPF(from:grammar:tokens:) -> SPPFGraph<NodeLabel>
@@ -311,11 +308,11 @@ The following bugs were corrected in this revision:
 
 **5. `EarleyTableParser.init` table selection** — Building only the SL table when `useExtendedLookahead == false` meant the EL table was unavailable after construction. Fixed: both tables are always built at `init` time (they are cheap relative to parsing); the algorithm is selected at call time inside `parse(tokens:)`.
 
-**6. `EarleyTableParser.parse(tokens:)` unimplemented** — The method existed but had an empty body. Implemented: dispatches to `simpleET` or `parseET`, builds the SPPF, wraps in `EarleyTableParseResult`.
+**6. `EarleyTableParser.parse(tokens:)` unimplemented** — The method dispatches to `simpleET` or `parseET`, builds the SPPF, and returns `ParseResult<NodeLabel>`.
 
 **7. `hasAmbiguity` false positives** — Was testing `getChildren(of:).count > 1` on every node. Packed nodes always have two children (left + right), so this was always `true`. Fixed: mirrors `Parser.GeneralizedParser.ParseResult.hasAmbiguity`: only `.symbol` and `.intermediate` nodes with more than one *packed* child signal ambiguity.
 
-**8. `tokenizeAndParse` return type** — Was returning `ParseResult` (the generic Parser-module type), which has no `earleySets` field and mismatches callers that need Earley-specific data. Fixed to return `EarleyTableParseResult`.
+**8. `tokenizeAndParse` return type** — All public parsing helpers return the shared `ParseResult<NodeLabel>`; Earley sets remain internal diagnostics.
 
 ---
 
@@ -327,7 +324,7 @@ The following bugs were corrected in this revision:
 
 - **`parse(tokens:)`** — direct pre-tokenised API that bypasses the whitespace tokeniser, useful when the caller drives its own lexer.
 
-- **`ParseResult<NodeLabel>`** — `GeneralizedParser.parse(_:)` now returns the shared `ParseResult<NodeLabel>` type (not the Earley-specific `EarleyTableParseResult`), which makes the facade interchangeable with other Parser-module conformers.
+- **`ParseResult<NodeLabel>`** — Every public parsing entry point returns the shared Parser-module type, making the facade interchangeable with other parser implementations.
 
 ---
 

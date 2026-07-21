@@ -167,7 +167,7 @@ public func buildELParseTable(nfa: EarleyNFA, grammar: Grammar) -> ELParseTable 
 /// Key differences from simpleET():
 ///   (i)  Completer fires for each Y ∈ rLHS(p), guarded by a_{j+1} ∈ SELECT(p).
 ///   (ii) Scanner fires only when a_{j+1} ∈ SELECT(p).
-public func parseET(table: ELParseTable, input tokens: [String]) -> EarleyTableParseResult {
+func parseET(table: ELParseTable, input tokens: [String]) -> TableTraversalResult {
     let n = tokens.count
 
     func a(_ j: Int) -> String {
@@ -233,7 +233,7 @@ public func parseET(table: ELParseTable, input tokens: [String]) -> EarleyTableP
         element.label.isCompleted && element.label.goal == table.grammar.start &&
         element.leftExtent == 0 && element.rightExtent == n
     }
-    return EarleyTableParseResult(accepted: accepted, bsrSet: Upsilon, earleySets: E, sppfGraph: nil)
+    return TableTraversalResult(accepted: accepted, bsrSet: Upsilon, earleySets: E)
 }
 
 // MARK: - Helpers for SELECT computation
