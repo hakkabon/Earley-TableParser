@@ -161,12 +161,10 @@ extension Grammar {
 ///
 /// (Scott & Johnstone 2026, Section 4.3)
 public func buildEarleyNFA(grammar: Grammar) -> EarleyNFA {
-    // G₀: initial dot-0 slots for every start production, then close under calls().
-    let startSlots: Set<Slot> = Set(
-        grammar.productions
-            .filter { $0.goal == grammar.start }
-            .map    { Slot(production: $0, dot: 0) }
-    )
+    // G₀ starts with every left-null-call slot of the start symbol, not
+    // merely its dot-zero slots. Otherwise a nullable prefix such as A in
+    // S ::= A S b can never be skipped at input position zero.
+    let startSlots = Set(grammar.lnCallSlots(for: grammar.start))
     let g0 = calls(startSlots, grammar: grammar)
 
     var allStates: [Set<Slot>] = [g0]

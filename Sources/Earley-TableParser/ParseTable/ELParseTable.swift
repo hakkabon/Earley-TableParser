@@ -227,12 +227,11 @@ public func parseET(table: ELParseTable, input tokens: [String]) -> EarleyTableP
         }
     }
 
-    let startNT = nfa_startNonterminal(nfa: table.nfa) ?? table.grammar.start
-    let accepted = E[n].contains { pair in
-        pair.backIndex == 0 &&
-        table.nfa.states[pair.state].contains { slot in
-            slot.isComplete && slot.production.goal == startNT
-        }
+    let accepted = (n == 0 && table.grammar.productions.contains {
+        $0.goal == table.grammar.start && $0.rule.isEmpty
+    }) || Upsilon.contains { element in
+        element.label.isCompleted && element.label.goal == table.grammar.start &&
+        element.leftExtent == 0 && element.rightExtent == n
     }
     return EarleyTableParseResult(accepted: accepted, bsrSet: Upsilon, earleySets: E, sppfGraph: nil)
 }

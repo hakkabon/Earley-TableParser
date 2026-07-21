@@ -54,6 +54,15 @@
 import Foundation
 import Grammar
 import Parser
+import Lexer
+
+/// Symbols recognized by the general-purpose `TokenizerStream` convenience
+/// used by `parse(_:)` and `syntaxTree(for:)`.
+private let tokenizerSymbols: Set<String> = [
+    "//", "/*", "*\\", ":", ":=", "::=", ",", "->", ".", "\"", "<=", ">=",
+    "==", "!=", "!", ">", "{", "[", "<", "(", "*", "|", "+", "-", "/", "'",
+    "}", "]", ")", ";", "?", "#"
+]
 
 // MARK: - Ambiguity check (BSR-only heuristic)
 
@@ -138,12 +147,15 @@ public func simpleET(table: SLParseTable, input tokens: [String]) -> EarleyTable
         }
     }
 
-    let startNT = nfa_startNonterminal(nfa: table.nfa) ?? table.grammar.start
-    let accepted = E[n].contains { pair in
-        pair.backIndex == 0 &&
-        table.nfa.states[pair.state].contains { slot in
-            slot.isComplete && slot.production.goal == startNT
-        }
+    // NFA states contain entailment-closed sets of slots, so the mere presence
+    // of a completed start slot in a state can be an over-approximation. The
+    // parser has the stronger witness available: a completed start BSR spanning
+    // the whole input.
+    let accepted = (n == 0 && table.grammar.productions.contains {
+        $0.goal == table.grammar.start && $0.rule.isEmpty
+    }) || Upsilon.contains { element in
+        element.label.isCompleted && element.label.goal == table.grammar.start &&
+        element.leftExtent == 0 && element.rightExtent == n
     }
     return EarleyTableParseResult(accepted: accepted, bsrSet: Upsilon, earleySets: E, sppfGraph: nil)
 }
@@ -152,7 +164,7 @@ public func simpleET(table: SLParseTable, input tokens: [String]) -> EarleyTable
 
 /// Build an SPPF graph from a BSR set.
 /// BUG 2 & 3 fix: left-child construction is now correct for all label shapes.
-public func buildSPPF(
+private func legacyBuildSPPF(
     from bsrSet: Set<BSR<NodeLabel>>,
     grammar: Grammar,
     tokens: [String]
@@ -222,6 +234,104 @@ public func buildSPPF(
     populate(lhs: grammar.start, left: 0, right: n)
     graph.cleanup()
     return graph
+}
+
+/// Build an SPPF by expanding symbol and intermediate nodes from the BSR set.
+/// This mirrors the extraction used by the sibling Earley-Parser package.
+public func buildSPPF(
+    from bsrSet: Set<BSR<NodeLabel>>,
+    grammar: Grammar,
+    tokens: [String]
+) -> SPPFGraph<NodeLabel> {
+    let graph = SPPFGraph<NodeLabel>()
+    let n = tokens.count
+    let hasRoot = bsrSet.contains {
+        $0.label.isCompleted && $0.label.goal == grammar.start &&
+        $0.leftExtent == 0 && $0.rightExtent == n
+    }
+    let hasEmptyRoot = n == 0 && grammar.productions.contains {
+        $0.goal == grammar.start && $0.rule.isEmpty
+    }
+    guard hasRoot || hasEmptyRoot else { return graph }
+
+    let root = SPPFNode<NodeLabel>.symbol(
+        label: grammar.start.name, leftExtent: 0, rightExtent: n)
+    graph.add(root)
+    var expanded = Set<SPPFNode<NodeLabel>>()
+
+    while let node = graph.getExtendableNodes().first(where: { !expanded.contains($0) }) {
+        expanded.insert(node)
+        switch node {
+        case let .symbol(name, left, right):
+            for entry in bsrSet where entry.label.isCompleted &&
+                entry.label.goal.name == name && entry.leftExtent == left &&
+                entry.rightExtent == right {
+                makePackedNode(entry.label, left: left, pivot: entry.pivot, right: right,
+                               parent: node, graph: graph, grammar: grammar)
+            }
+            if left == right {
+                for production in grammar.productions where
+                    production.goal.name == name && production.rule.isEmpty {
+                    let label = NodeLabel(
+                        goal: production.goal, symbols: production.rule, position: 0)
+                    makePackedNode(label, left: left, pivot: left, right: right,
+                                   parent: node, graph: graph, grammar: grammar)
+                }
+            }
+        case let .intermediate(label, left, right):
+            let alpha = Array(label.symbols.prefix(label.position))
+            if alpha.count == 1 {
+                makePackedNode(label, left: left, pivot: left, right: right,
+                               parent: node, graph: graph, grammar: grammar)
+            } else {
+                for entry in bsrSet where entry.label == label &&
+                    entry.leftExtent == left && entry.rightExtent == right {
+                    makePackedNode(label, left: left, pivot: entry.pivot, right: right,
+                                   parent: node, graph: graph, grammar: grammar)
+                }
+            }
+        case .leaf, .packed:
+            break
+        }
+    }
+    graph.cleanup()
+    return graph
+}
+
+private func sppfNode(for symbol: Symbol, left: Int, right: Int) -> SPPFNode<NodeLabel> {
+    switch symbol {
+    case .terminal(let terminal):
+        return .leaf(label: terminal.description, leftExtent: left, rightExtent: right)
+    case .nonTerminal(let nonterminal):
+        return .symbol(label: nonterminal.name, leftExtent: left, rightExtent: right)
+    case .metaSymbol(let meta):
+        return .leaf(label: meta.rawValue, leftExtent: left, rightExtent: right)
+    }
+}
+
+private func makePackedNode(
+    _ label: NodeLabel, left: Int, pivot: Int, right: Int,
+    parent: SPPFNode<NodeLabel>, graph: SPPFGraph<NodeLabel>, grammar: Grammar
+) {
+    let packed = SPPFNode<NodeLabel>.packed(
+        label: label, leftExtent: left, rightExtent: right, pivot: pivot)
+    graph.addEdge(from: parent, to: packed)
+    let alpha = Array(label.symbols.prefix(label.position))
+    guard !alpha.isEmpty else {
+        graph.addEdge(from: packed, to: .leaf(
+            label: "\(grammar.epsilon)", leftExtent: left, rightExtent: right))
+        return
+    }
+
+    graph.addEdge(from: packed, to: sppfNode(for: alpha.last!, left: pivot, right: right))
+    if alpha.count == 2 {
+        graph.addEdge(from: packed, to: sppfNode(for: alpha[0], left: left, right: pivot))
+    } else if alpha.count > 2 {
+        let intermediate = NodeLabel(
+            goal: label.goal, symbols: label.symbols, position: label.position - 1)
+        graph.addEdge(from: packed, to: .intermediate(
+            label: intermediate, leftExtent: left, rightExtent: pivot))
+    }
 }
 
 private struct SPPFLookupKey: Hashable {
@@ -418,17 +528,17 @@ extension EarleyTableParser: DeterministicParser {
     ///
     /// - Throws: `SyntaxError` if the string is not in the language.
     public func syntaxTree(for string: String) throws -> ParseTree {
-        let tokens = tokenize(string)
-        let result = try parse(tokens: tokens)
-        guard let sppf = result.sppfGraph else {
+        let stream = TokenizerStream(
+            source: string, symbols: tokenizerSymbols, keywords: [])
+        let parsed = try parseStream(stream)
+        guard let sppf = parsed.result.sppfGraph else {
             throw SyntaxError(
                 range: string.startIndex..<string.endIndex,
                 in: string, reason: .unexpectedToken)
         }
-        let ranges = tokenRanges(for: tokens, in: string)
         return sppf.buildParseTree(
             startSymbol: grammar.start.name,
-            ranges:      ranges,
+            ranges:      parsed.ranges,
             string:      string)
     }
 }
@@ -444,14 +554,18 @@ extension EarleyTableParser: GeneralizedParser {
     ///
     /// - Throws: `SyntaxError` if the string is not in the language.
     public func parse(_ string: String) throws -> ParseResult<NodeLabel> {
-        let tokens = tokenize(string)
-        let result = try parse(tokens: tokens)
-        guard let sppf = result.sppfGraph else {
-            throw SyntaxError(
-                range: string.startIndex..<string.endIndex,
-                in: string, reason: .unexpectedToken)
-        }
-        return ParseResult(isSuccessful: true, bsr: result.bsrSet, sppfGraph: sppf)
+        try parse(stream: TokenizerStream(
+            source: string, symbols: tokenizerSymbols, keywords: []))
+    }
+
+    /// Parse a pre-tokenized stream. The parser performs no lexical analysis;
+    /// it consumes the terminals and source ranges supplied by `stream`.
+    public func parse<S: TokenStream>(stream: S) throws -> ParseResult<NodeLabel> {
+        let parsed = try parseStream(stream)
+        return ParseResult(
+            isSuccessful: true,
+            bsr: parsed.result.bsrSet,
+            sppfGraph: parsed.result.sppfGraph)
     }
 
     /// Parse `string` and return **all** parse trees, de-duplicated.
@@ -461,13 +575,13 @@ extension EarleyTableParser: GeneralizedParser {
     ///
     /// - Throws: `SyntaxError` if the string is not in the language.
     public func allSyntaxTrees(for string: String) throws -> [ParseTree] {
-        let tokens = tokenize(string)
-        let result = try parse(tokens: tokens)
-        guard let sppf = result.sppfGraph else { return [] }
-        let ranges = tokenRanges(for: tokens, in: string)
+        let stream = TokenizerStream(
+            source: string, symbols: tokenizerSymbols, keywords: [])
+        let parsed = try parseStream(stream)
+        guard let sppf = parsed.result.sppfGraph else { return [] }
         return sppf.buildAllParseTrees(
             startSymbol: grammar.start.name,
-            ranges:      ranges,
+            ranges:      parsed.ranges,
             string:      string)
     }
 }
@@ -476,6 +590,24 @@ extension EarleyTableParser: GeneralizedParser {
 
 extension EarleyTableParser {
 
+    private func parseStream<S: TokenStream>(
+        _ stream: S
+    ) throws -> (result: EarleyTableParseResult, ranges: [Range<String.Index>]) {
+        var tokens: [String] = []
+        var ranges: [Range<String.Index>] = []
+        tokens.reserveCapacity(stream.count)
+        ranges.reserveCapacity(stream.count)
+
+        for position in 0..<stream.count {
+            let (terminal, range) = try stream.terminal(at: position)
+            if case .meta(.eof) = terminal { continue }
+            tokens.append(String(stream.source[range]))
+            ranges.append(range)
+        }
+        return (try parse(tokens: tokens), ranges)
+    }
+
+    @available(*, deprecated, message: "Use parse(stream:) with a TokenStream")
     /// Split `string` on whitespace (omitting empty subsequences).
     func tokenize(_ string: String) -> [String] {
         string.split(separator: " ", omittingEmptySubsequences: true).map(String.init)

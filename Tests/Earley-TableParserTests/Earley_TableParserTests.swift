@@ -11,6 +11,7 @@ import Testing
 import Foundation
 import Grammar
 import Parser
+import Lexer
 
 // MARK: - Grammar Helpers
 
@@ -752,6 +753,53 @@ struct ELParserTests {
 
 @Suite("EarleyTableParser facade")
 struct EarleyTableParserFacadeTests {
+
+    @Test("G₀ includes start slots after nullable prefixes")
+    func initialStateIncludesLeftNullStartSlots() {
+        let grammar = gamma1()
+        let nfa = buildEarleyNFA(grammar: grammar)
+        #expect(nfa.states[0].contains {
+            $0.production.goal == grammar.start && $0.dot == 1
+        })
+    }
+
+    @Test("acceptance always uses the declared start symbol")
+    func acceptanceUsesDeclaredStart() {
+        let grammar = gamma1()
+        let table = buildRecogniserTable(
+            nfa: buildEarleyNFA(grammar: grammar), grammar: grammar)
+        for _ in 0..<20 {
+            #expect(recET(table: table, input: ["a"]))
+            #expect(!recET(table: table, input: ["b"]))
+        }
+    }
+
+    @Test("parse(stream:) consumes positioned tokens without retokenizing")
+    func parsesTokenStream() throws {
+        let grammar = Grammar(
+            productions: [
+                Production(goal: NT("S"), rule: [T("("), T("a"), T(")")])
+            ],
+            start: NT("S"), lexicalTokens: [:])
+        let parser = EarleyTableParser(grammar: grammar)
+        let source = "(a)"
+        let stream = TokenizerStream(
+            source: source, symbols: ["(", ")"], keywords: [])
+        let result = try parser.parse(stream: stream)
+        #expect(result.isSuccessful)
+        #expect(result.sppfGraph != nil)
+    }
+
+    @Test("string convenience delegates to TokenizerStream")
+    func stringConvenienceTokenizesSymbols() throws {
+        let grammar = Grammar(
+            productions: [
+                Production(goal: NT("S"), rule: [T("("), T("a"), T(")")])
+            ],
+            start: NT("S"), lexicalTokens: [:])
+        let result = try EarleyTableParser(grammar: grammar).parse("(a)")
+        #expect(result.isSuccessful)
+    }
 
     // MARK: Init and pre-computed tables
 

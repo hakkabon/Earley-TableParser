@@ -34,6 +34,9 @@ public struct RecTableEntry {
 public struct RecogniserTable {
     let entries: [[String: RecTableEntry]]   // indexed by state, keyed by symbol key
     let nfa: EarleyNFA
+    /// The grammar start symbol. Acceptance must not infer this from G₀,
+    /// whose entailment closure normally contains slots for several goals.
+    public let start: NonTerminal
 
     /// Every grammar terminal that isn't `.string` — i.e. a `.regularExpression`,
     /// `.characterRange`, or `.stringList` terminal, ordinarily one resolved
@@ -128,7 +131,11 @@ public func buildRecogniserTable(nfa: EarleyNFA, grammar: Grammar) -> Recogniser
         entries[p][epsilonKey] = RecTableEntry(nextState: epsNext, completedNTs: [])
     }
 
-    return RecogniserTable(entries: entries, nfa: nfa, patternTerminals: collectPatternTerminals(for: grammar))
+    return RecogniserTable(
+        entries: entries,
+        nfa: nfa,
+        start: grammar.start,
+        patternTerminals: collectPatternTerminals(for: grammar))
 }
 
 // MARK: - recET() Recogniser
@@ -198,13 +205,11 @@ public func recET(table: RecogniserTable, input tokens: [String]) -> Bool {
     }
 
     // Determine the start nonterminal from NFA state 0.
-    guard let startNT = nfa_startNonterminal(nfa: table.nfa) else { return false }
-
     // Accept if some (p, 0) ∈ 𝔼_n where G_p contains a complete start item.
     return E[n].contains { pair in
         pair.backIndex == 0 &&
         table.nfa.states[pair.state].contains { slot in
-            slot.isComplete && slot.production.goal == startNT
+            slot.isComplete && slot.production.goal == table.start
         }
     }
 }
@@ -258,12 +263,3 @@ let epsilonKey: String = MetaTerminal.eps.rawValue   // "ε"
 
 /// The dictionary key for the end-of-input sentinel.
 let eofKey: String = MetaTerminal.eof.rawValue        // "$"
-
-// MARK: - Internal helpers
-
-/// Extract the start nonterminal from NFA state 0.
-func nfa_startNonterminal(nfa: EarleyNFA) -> NonTerminal? {
-    nfa.states[0]
-        .compactMap { $0.dot == 0 ? $0.production.goal : nil }
-        .first
-}

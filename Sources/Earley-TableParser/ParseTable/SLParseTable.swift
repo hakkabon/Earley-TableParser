@@ -77,21 +77,20 @@ func mSets(_ M: Set<Slot>, symbol x: Symbol) -> Set<NodeLabel> {
 func eSets(_ M: Set<Slot>, grammar: Grammar) -> Set<NodeLabel> {
     var result = Set<NodeLabel>()
     for slot in M {
-        guard let next = slot.nextSymbol else { continue }
-        let nextIsNullable: Bool
-        switch next {
-        case .nonTerminal(let nt): nextIsNullable = grammar.isNullable(nt)
-        case .terminal(let t):     nextIsNullable = t.isEmpty
-        case .metaSymbol:          nextIsNullable = false
-        }
-        guard nextIsNullable else { continue }
-
-        if slot.dot == 0 {
-            // α is empty: the production's entire nullable suffix collapses,
-            // so this slot's production behaves as fully matched.
-            result.insert(NodeLabel(goal: slot.production.goal, symbols: slot.production.rule, position: slot.production.rule.count))
-        } else {
-            result.insert(NodeLabel(goal: slot.production.goal, symbols: slot.production.rule, position: slot.dot))
+        var position = slot.dot
+        while position < slot.production.rule.count {
+            let nullable: Bool
+            switch slot.production.rule[position] {
+            case .nonTerminal(let nt): nullable = grammar.isNullable(nt)
+            case .terminal(let terminal): nullable = terminal.isEmpty
+            case .metaSymbol: nullable = false
+            }
+            guard nullable else { break }
+            position += 1
+            result.insert(NodeLabel(
+                goal: slot.production.goal,
+                symbols: slot.production.rule,
+                position: position))
         }
     }
     return result

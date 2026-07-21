@@ -71,6 +71,7 @@ The `Grammar`, `BSR`, `SPPFGraph`, `SPPFNode`, `ParseResult`, `DeterministicPars
 ```swift
 import Earley_TableParser
 import Grammar
+import Lexer
 
 // 1. Define a grammar
 let grammar = Grammar(
@@ -113,7 +114,12 @@ print("Ambiguous:",    result.hasAmbiguity)
 // 4. Pre-tokenised input bypasses the whitespace tokeniser
 let rawResult = try parser.parse(tokens: ["a", "a", "b"])
 
-// 5. Switch to extended lookahead (Section 7.3)
+// 5. Preferred parser boundary: consume any Lexer TokenStream directly.
+// No tokenization is performed by the table parser.
+let stream = TokenizerStream(source: "a a b")
+let streamedResult = try parser.parse(stream: stream)
+
+// 6. Switch to extended lookahead (Section 7.3)
 parser.useExtendedLookahead = true
 let elTree = try parser.syntaxTree(for: "a a b")
 ```
@@ -229,6 +235,11 @@ public final class EarleyTableParser {
 
     // Core method (both SL and EL route through here)
     public func parse(tokens: [String]) throws -> EarleyTableParseResult
+
+    // Parser-level entry point for LexerTokenStream, TokenizerStream, or any
+    // other TokenStream implementation. Terminals and source ranges are
+    // supplied by the stream.
+    public func parse<S: TokenStream>(stream: S) throws -> ParseResult<NodeLabel>
 }
 ```
 
