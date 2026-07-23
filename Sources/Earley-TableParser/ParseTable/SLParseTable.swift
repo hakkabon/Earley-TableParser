@@ -112,37 +112,29 @@ public struct SLTableEntry {
 // MARK: - SL Parse Table
 
 public struct SLParseTable {
-    /// entries[state][symbolKey] = SLTableEntry
-    let entries: [[String: SLTableEntry]]
+    /// `entries[state][column] = SLTableEntry`.
+    let entries: [[TableKey: SLTableEntry]]
     public let nfa: EarleyNFA
     public let grammar: Grammar
 
-    /// See `RecogniserTable.patternTerminals`'s doc comment — same purpose,
-    /// same reason it's needed, computed once here from `grammar` rather than
-    /// threaded in separately.
-    let patternTerminals: [(terminal: Terminal, key: String)]
+    private let keyResolver: TableKeyResolver
 
-    public init(entries: [[String: SLTableEntry]], nfa: EarleyNFA, grammar: Grammar) {
+    public init(entries: [[TableKey: SLTableEntry]], nfa: EarleyNFA, grammar: Grammar) {
         self.entries = entries
         self.nfa = nfa
         self.grammar = grammar
-        self.patternTerminals = collectPatternTerminals(for: grammar)
+        self.keyResolver = TableKeyResolver(grammar: grammar)
     }
 
-    public func entry(state p: Int, symbol x: String) -> SLTableEntry? {
-        guard p < entries.count else { return nil }
+    /// Looks up the entry for state `p` and typed column key `x`.
+    public func entry(state p: Int, symbol x: TableKey) -> SLTableEntry? {
+        guard entries.indices.contains(p) else { return nil }
         return entries[p][x]
     }
 
-    /// See `RecogniserTable.resolveKey(forToken:)`'s doc comment — identical
-    /// purpose: bridges a raw input token's literal text to the key its
-    /// matching table column (which may be a regex/range/list pattern's own
-    /// text, not the token's) is actually stored under.
-    public func resolveKey(forToken token: String) -> String {
-        for (terminal, key) in patternTerminals where terminal.matches(.string(string: token)) {
-            return key
-        }
-        return token
+    /// Resolves a concrete input token to its typed literal or pattern column.
+    public func key(forToken token: String) -> TableKey {
+        keyResolver.key(forToken: token)
     }
 }
 
@@ -152,7 +144,7 @@ public func buildSLParseTable(nfa: EarleyNFA, grammar: Grammar) -> SLParseTable 
     let follow = grammar.followSets()   // [NonTerminal: Set<Symbol>]
     let epsilonSym: Symbol = .terminal(.meta(.eps))
 
-    var entries = [[String: SLTableEntry]](repeating: [:], count: nfa.stateCount)
+    var entries = [[TableKey: SLTableEntry]](repeating: [:], count: nfa.stateCount)
 
     for p in 0..<nfa.stateCount {
         let gp = nfa.states[p]
@@ -162,7 +154,7 @@ public func buildSLParseTable(nfa: EarleyNFA, grammar: Grammar) -> SLParseTable 
             + [.terminal(.meta(.eof))]
 
         for sym in terminalSymbols {
-            let key = symbolKey(sym)
+            guard let key = TableKey(symbol: sym) else { continue }
             let next = nfa.transition(from: p, on: sym)
 
             // Completer set A_{p,x}: complete slots whose FOLLOW contains sym.
@@ -184,7 +176,7 @@ public func buildSLParseTable(nfa: EarleyNFA, grammar: Grammar) -> SLParseTable 
         // ── Nonterminal columns ──
         for nt in grammar.nonTerminals {
             let sym = Symbol.nonTerminal(nt)
-            let key = symbolKey(sym)
+            let key = TableKey.nonTerminal(nt)
             let next = nfa.transition(from: p, on: sym)
 
             let chi1 = mSets(gp, symbol: sym)
@@ -196,7 +188,7 @@ public func buildSLParseTable(nfa: EarleyNFA, grammar: Grammar) -> SLParseTable 
 
         // ── ε column ──
         let epsNext = nfa.transition(from: p, on: epsilonSym)
-        entries[p][epsilonKey] = SLTableEntry(
+        entries[p][.epsilon] = SLTableEntry(
             nextState: epsNext, completedNTs: [], chi1: [], chi2: [])
     }
 

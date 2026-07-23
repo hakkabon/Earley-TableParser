@@ -67,6 +67,43 @@ func gamma3() -> Grammar {
     )
 }
 
+/// Exercises spellings that used to alias in string-keyed table columns.
+func collidingColumnGrammar() -> Grammar {
+    Grammar(
+        productions: [
+            Production(goal: NT("S"), rule: [T("X")]),
+            Production(goal: NT("S"), rule: [N("X")]),
+            Production(goal: NT("S"), rule: [T("$")]),
+            Production(goal: NT("S"), rule: [T("ε")]),
+            Production(goal: NT("X"), rule: [T("x")])
+        ],
+        start: NT("S"),
+        lexicalTokens: [:]
+    )
+}
+
+/// All words over `alphabet` through `maxLength`, including the empty word.
+func words(over alphabet: [String], maxLength: Int) -> [[String]] {
+    var result: [[String]] = [[]]
+    var frontier: [[String]] = [[]]
+    for _ in 0..<maxLength {
+        frontier = frontier.flatMap { prefix in
+            alphabet.map { prefix + [$0] }
+        }
+        result.append(contentsOf: frontier)
+    }
+    return result
+}
+
+/// Γ₁ generates a^k b^m where k ≥ 1 and either m ≥ 1 or k = 1.
+func isInGamma1(_ tokens: [String]) -> Bool {
+    let aCount = tokens.prefix(while: { $0 == "a" }).count
+    let bCount = tokens.dropFirst(aCount).prefix(while: { $0 == "b" }).count
+    return aCount + bCount == tokens.count
+        && aCount >= 1
+        && (bCount >= 1 || aCount == 1)
+}
+
 // MARK: - EarleyParserTests
 
 @Suite
@@ -101,6 +138,62 @@ struct EarleyParserTests {
         #expect(nfa.stateCount >= 2, "Ambiguous grammars typically have more states")
     }
 
+    @Test("Typed table keys keep terminal, nonterminal, epsilon, and EOF distinct")
+    func tableKeyCategoriesAreDistinct() {
+        let keys: Set<TableKey> = [
+            .terminal(Terminal(string: "S")),
+            .nonTerminal(NT("S")),
+            .epsilon,
+            .endOfInput
+        ]
+        #expect(keys.count == 4)
+        #expect(TableKey(symbol: T("$")) == .terminal(Terminal(string: "$")))
+        #expect(TableKey(symbol: .terminal(.meta(.eof))) == .endOfInput)
+        #expect(TableKey(symbol: T("ε")) == .terminal(Terminal(string: "ε")))
+        #expect(TableKey(symbol: .terminal(.meta(.eps))) == .epsilon)
+    }
+
+    @Test("Typed columns preserve colliding spellings in all traversals")
+    func typedColumnsPreserveCollidingSpellings() {
+        let grammar = collidingColumnGrammar()
+        let nfa = buildEarleyNFA(grammar: grammar)
+        let recogniser = buildRecogniserTable(nfa: nfa, grammar: grammar)
+        let sl = buildSLParseTable(nfa: nfa, grammar: grammar)
+        let el = buildELParseTable(nfa: nfa, grammar: grammar)
+
+        for input in [["X"], ["x"], ["$"], ["ε"]] {
+            #expect(recET(table: recogniser, input: input), "recET rejected \(input)")
+            #expect(simpleET(table: sl, input: input).accepted, "simpleET rejected \(input)")
+            #expect(parseET(table: el, input: input).accepted, "parseET rejected \(input)")
+        }
+        #expect(!recET(table: recogniser, input: []))
+        #expect(!simpleET(table: sl, input: []).accepted)
+        #expect(!parseET(table: el, input: []).accepted)
+    }
+
+    @Test("Pattern-terminal table keys use structural hashing")
+    func patternTerminalKeysUseStructuralHashing() throws {
+        let first = try Terminal(expression: "[0-9]+")
+        let second = try Terminal(expression: "[0-9]+")
+        #expect(first == second)
+        #expect(Set([TableKey.terminal(first), TableKey.terminal(second)]).count == 1)
+
+        let grammar = Grammar(
+            productions: [Production(goal: NT("S"), rule: [.terminal(first)])],
+            start: NT("S"),
+            lexicalTokens: [:])
+        let nfa = buildEarleyNFA(grammar: grammar)
+        #expect(recET(
+            table: buildRecogniserTable(nfa: nfa, grammar: grammar),
+            input: ["42"]))
+        #expect(simpleET(
+            table: buildSLParseTable(nfa: nfa, grammar: grammar),
+            input: ["42"]).accepted)
+        #expect(parseET(
+            table: buildELParseTable(nfa: nfa, grammar: grammar),
+            input: ["42"]).accepted)
+    }
+
     // MARK: - Recogniser Tests
 
     @Test("Recogniser accepts valid Γ₁ inputs")
@@ -110,6 +203,7 @@ struct EarleyParserTests {
 
         #expect(recET(table: table, input: ["a"]))
         #expect(recET(table: table, input: ["a", "b"]))
+        #expect(recET(table: table, input: ["a", "b", "b"]))
         #expect(recET(table: table, input: ["a", "a", "b"]))
         #expect(recET(table: table, input: ["a", "a", "a", "b", "b"]))
     }
@@ -120,8 +214,27 @@ struct EarleyParserTests {
         let table = buildRecogniserTable(nfa: nfa, grammar: gamma1())
 
         #expect(!recET(table: table, input: ["b"]))
-        #expect(!recET(table: table, input: ["a", "b", "b"]))
         #expect(!recET(table: table, input: ["a", "a"]))
+        #expect(!recET(table: table, input: ["b", "a"]))
+    }
+
+    @Test("All traversals recognise the exact Γ₁ language through length 5")
+    func testGamma1ExhaustiveShortInputs() {
+        let grammar = gamma1()
+        let nfa = buildEarleyNFA(grammar: grammar)
+        let recogniser = buildRecogniserTable(nfa: nfa, grammar: grammar)
+        let sl = buildSLParseTable(nfa: nfa, grammar: grammar)
+        let el = buildELParseTable(nfa: nfa, grammar: grammar)
+
+        for input in words(over: ["a", "b"], maxLength: 5) {
+            let expected = isInGamma1(input)
+            #expect(recET(table: recogniser, input: input) == expected,
+                    "recET disagrees for '\(input.joined())'")
+            #expect(simpleET(table: sl, input: input).accepted == expected,
+                    "simpleET disagrees for '\(input.joined())'")
+            #expect(parseET(table: el, input: input).accepted == expected,
+                    "parseET disagrees for '\(input.joined())'")
+        }
     }
 
     @Test("Recogniser accepts valid Γ₂ inputs")
@@ -183,8 +296,16 @@ struct EarleyParserTests {
         let result = simpleET(table: table, input: ["b", "b", "b"])
 
         #expect(result.accepted)
-        // With ambiguous grammar, we expect multiple BSR elements for the same (LHS, left, right)
-        #expect(result.bsrSet.count > 1, "Ambiguous grammar should generate multiple BSR elements")
+        let binaryPivots = Set(result.bsrSet.compactMap { element -> Int? in
+            guard element.label.isCompleted,
+                  element.label.goal == NT("S"),
+                  element.label.symbols == [N("S"), N("S")],
+                  element.leftExtent == 0,
+                  element.rightExtent == 3 else { return nil }
+            return element.pivot
+        })
+        #expect(binaryPivots == [1, 2],
+                "The two binary derivations must retain their distinct pivots")
     }
 
     @Test("Parser handles Γ₂ with ε-productions")
@@ -521,9 +642,9 @@ struct AdditionalTests {
         let nfa = buildEarleyNFA(grammar: grammar)
 
         for p in 0..<nfa.stateCount {
-            let completed = nfa.completedNonterminals(in: p)
-            // Just verify it returns something (could be empty)
-            _ = completed
+            let expected = Set(
+                nfa.states[p].filter(\.isComplete).map(\.production.goal))
+            #expect(nfa.completedNonterminals(in: p) == expected)
         }
     }
 
@@ -538,8 +659,8 @@ struct AdditionalTests {
 
         let sppf = buildSPPF(from: result.bsrSet, grammar: grammar, tokens: ["a"])
         let extendable = sppf.getExtendableNodes()
-        // Extendable nodes are non-leaf, non-packed nodes
-        #expect(extendable.count >= 0)
+        #expect(extendable.isEmpty,
+                "Every symbol/intermediate node in the completed SPPF should be expanded")
     }
 
     @Test("Graphviz export works")
@@ -754,12 +875,18 @@ struct ELParserTests {
 @Suite("EarleyTableParser facade")
 struct EarleyTableParserFacadeTests {
 
-    @Test("G₀ includes start slots after nullable prefixes")
-    func initialStateIncludesLeftNullStartSlots() {
+    @Test("G₀ keeps nullable calls separate from core advancement")
+    func initialStateKeepsCallsAndCoreSeparate() {
         let grammar = gamma1()
         let nfa = buildEarleyNFA(grammar: grammar)
         #expect(nfa.states[0].contains {
+            $0.production.goal == grammar.start && $0.dot == 0
+        })
+        #expect(!nfa.states[0].contains {
             $0.production.goal == grammar.start && $0.dot == 1
+        })
+        #expect(nfa.states[0].contains {
+            $0.production.goal == NT("A") && $0.isComplete
         })
     }
 
@@ -790,6 +917,49 @@ struct EarleyTableParserFacadeTests {
         #expect(result.sppfGraph != nil)
     }
 
+    @Test("parse(stream:) reports failure in the stream's source coordinates")
+    func tokenStreamSyntaxErrorUsesSourceRange() {
+        let grammar = Grammar(
+            productions: [
+                Production(goal: NT("S"), rule: [T("("), T("a"), T(")")])
+            ],
+            start: NT("S"), lexicalTokens: [:])
+        let parser = EarleyTableParser(grammar: grammar)
+        let source = "(b)"
+        let stream = TokenizerStream(
+            source: source, symbols: ["(", ")"], keywords: [])
+
+        do {
+            _ = try parser.parse(stream: stream)
+            Issue.record("Expected parse(stream:) to throw")
+        } catch let error as SyntaxError {
+            #expect(error.string == source)
+            #expect(String(source[error.range]) == "b")
+        } catch {
+            Issue.record("Expected SyntaxError, got \(error)")
+        }
+    }
+
+    @Test("incomplete stream reports a printable EOF syntax error")
+    func incompleteStreamReportsEOF() {
+        let parser = EarleyTableParser(grammar: gamma1())
+        let source = "a a"
+        let stream = TokenizerStream(source: source, symbols: [], keywords: [])
+
+        do {
+            _ = try parser.parse(stream: stream)
+            Issue.record("Expected parse(stream:) to throw")
+        } catch let error as SyntaxError {
+            #expect(error.range.isEmpty)
+            #expect(error.range.lowerBound == source.endIndex)
+            #expect(error.line == 0)
+            #expect(error.column == source.count)
+            #expect(error.description.contains("L1:4"))
+        } catch {
+            Issue.record("Expected SyntaxError, got \(error)")
+        }
+    }
+
     @Test("string convenience delegates to TokenizerStream")
     func stringConvenienceTokenizesSymbols() throws {
         let grammar = Grammar(
@@ -817,7 +987,7 @@ struct EarleyTableParserFacadeTests {
         #expect(parser.useExtendedLookahead == false)
     }
 
-    @Test("useExtendedLookahead can be set to true at init")
+    @Test("useExtendedLookahead is selected at initialization")
     func elModeInit() {
         let parser = EarleyTableParser(grammar: gamma1(), useExtendedLookahead: true)
         #expect(parser.useExtendedLookahead == true)
@@ -830,6 +1000,7 @@ struct EarleyTableParserFacadeTests {
         let parser = EarleyTableParser(grammar: gamma1())
         #expect(parser.recognizes("a"))
         #expect(parser.recognizes("a b"))
+        #expect(parser.recognizes("a b b"))
         #expect(parser.recognizes("a a b"))
     }
 
@@ -838,7 +1009,7 @@ struct EarleyTableParserFacadeTests {
         let parser = EarleyTableParser(grammar: gamma1())
         #expect(!parser.recognizes("b"))
         #expect(!parser.recognizes("a a"))
-        #expect(!parser.recognizes("a b b"))
+        #expect(!parser.recognizes("b a"))
     }
 
     @Test("recognizes returns true for valid Γ₁ inputs (EL)")
