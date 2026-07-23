@@ -28,9 +28,8 @@
 //    the BSR set. Replaced with a proper recursive binary descent that
 //    handles every production shape.
 //
-// 5. EarleyTableParser.init – always builds both tables regardless of
-//    useExtendedLookahead (tables are cheap to compute once and store).
-//    parse(tokens:) picks at call time.
+// 5. EarleyTableParser.init – always builds both tables. The immutable
+//    useExtendedLookahead setting chooses the traversal for this instance.
 //
 // 6. EarleyTableParser.parse(tokens:) – was never implemented (empty body).
 //    Implemented: runs simpleET or parseET, builds SPPF, wraps as ParseResult.
@@ -46,10 +45,8 @@
 // 9. DeterministicParser / GeneralizedParser conformance – was entirely
 //    absent. Implemented in EarleyTableParser.swift (this file).
 //
-// 10. Token-range mapping for ParseTree leaves – SPPFGraph.buildParseTree /
-//     buildAllParseTrees (TreeBuilder.swift in the Parser module) require a
-//     [Range<String.Index>] per-token array. tokenRanges(for:in:) builds it
-//     by scanning the input string for each whitespace-separated token.
+// 10. Token ranges are taken directly from TokenStream while consuming tokens;
+//     they are never reconstructed by rescanning the source string.
 
 import Foundation
 import Grammar
@@ -96,8 +93,8 @@ private struct AmbiguityKey: Hashable {
 func simpleET(table: SLParseTable, input tokens: [String]) -> TableTraversalResult {
     let n = tokens.count
 
-    func a(_ j: Int) -> String {
-        j >= 1 && j <= n ? table.resolveKey(forToken: tokens[j - 1]) : eofKey
+    func a(_ j: Int) -> TableKey {
+        j >= 1 && j <= n ? table.key(forToken: tokens[j - 1]) : .endOfInput
     }
 
     var E = [Set<EarleyPair>](repeating: [], count: n + 1)
@@ -121,7 +118,7 @@ func simpleET(table: SLParseTable, input tokens: [String]) -> TableTraversalResu
     }
 
     @discardableResult
-    func add(state p: Int, symbol x: String, backIndex i: Int, pivot k: Int, position j: Int) -> Bool {
+    func add(state p: Int, symbol x: TableKey, backIndex i: Int, pivot k: Int, position j: Int) -> Bool {
         guard let entry = table.entry(state: p, symbol: x) else { return false }
         for label in entry.chi1 {
             Upsilon.insert(BSR(label: label, leftExtent: i, pivot: k, rightExtent: j))
@@ -147,17 +144,15 @@ func simpleET(table: SLParseTable, input tokens: [String]) -> TableTraversalResu
         while !R[j].isEmpty {
             let (p, k) = R[j].removeLast().asTuple
 
-            if k != j {
-                let nextTok = a(j + 1)
-                for nt in table.entry(state: p, symbol: nextTok)?.completedNTs ?? [] {
-                    let ntKey = nonTerminalKey(nt)
-                    for (h, i) in E[k].map(\.asTuple) {
-                        add(state: h, symbol: ntKey, backIndex: i, pivot: k, position: j)
-                    }
+            let nextTok = a(j + 1)
+            for nt in table.entry(state: p, symbol: nextTok)?.completedNTs ?? [] {
+                let ntKey = TableKey.nonTerminal(nt)
+                for (h, i) in E[k].map(\.asTuple) {
+                    add(state: h, symbol: ntKey, backIndex: i, pivot: k, position: j)
                 }
             }
 
-            add(state: p, symbol: epsilonKey, backIndex: j, pivot: j, position: j)
+            add(state: p, symbol: .epsilon, backIndex: j, pivot: j, position: j)
 
             if j < n {
                 add(state: p, symbol: a(j + 1), backIndex: k, pivot: j, position: j + 1)
@@ -179,80 +174,6 @@ func simpleET(table: SLParseTable, input tokens: [String]) -> TableTraversalResu
 }
 
 // MARK: - BSR → SPPF construction
-
-/// Build an SPPF graph from a BSR set.
-/// BUG 2 & 3 fix: left-child construction is now correct for all label shapes.
-private func legacyBuildSPPF(
-    from bsrSet: Set<BSR<NodeLabel>>,
-    grammar: Grammar,
-    tokens: [String]
-) -> SPPFGraph<NodeLabel> {
-    let graph = SPPFGraph<NodeLabel>()
-    let n = tokens.count
-
-    // Index: (goal, left, right) → [BSR element]
-    var byKey: [SPPFLookupKey: [BSR<NodeLabel>]] = [:]
-    for elem in bsrSet {
-        byKey[SPPFLookupKey(lhs: elem.label.goal, left: elem.leftExtent, right: elem.rightExtent),
-              default: []].append(elem)
-    }
-
-    var processed = Set<SPPFLookupKey>()
-
-    func symNode(lhs: NonTerminal, left: Int, right: Int) -> SPPFNode<NodeLabel> {
-        let n = SPPFNode<NodeLabel>.symbol(label: lhs.name, leftExtent: left, rightExtent: right)
-        graph.add(n)
-        return n
-    }
-
-    func populate(lhs: NonTerminal, left: Int, right: Int) {
-        let key = SPPFLookupKey(lhs: lhs, left: left, right: right)
-        guard !processed.contains(key) else { return }
-        processed.insert(key)
-        guard let elems = byKey[key] else { return }
-
-        let parent = symNode(lhs: lhs, left: left, right: right)
-        for elem in elems {
-            let packed = SPPFNode<NodeLabel>.packed(
-                label: elem.label, leftExtent: left, rightExtent: right, pivot: elem.pivot)
-            graph.addEdge(from: parent, to: packed)
-
-            // ── Left child ──────────────────────────────────────────────────
-            // alpha = symbols consumed so far = symbols[0..<position]
-            let alpha = Array(elem.label.symbols.prefix(elem.label.position))
-
-            if elem.leftExtent < elem.pivot {
-                if alpha.count == 1 {
-                    // Single consumed symbol → attach directly (BUG 2 fix for single-sym completed).
-                    addLeafOrSymbol(from: packed, symbol: alpha[0],
-                                    left: elem.leftExtent, right: elem.pivot,
-                                    tokens: tokens, graph: graph, byKey: byKey, populate: populate)
-                } else if alpha.count > 1 {
-                    // Multiple consumed symbols → intermediate node.
-                    // BUG 3 fix: dot position = alpha.count − 1 (not label.position − 1).
-                    let intLabel = NodeLabel(
-                        goal: elem.label.goal,
-                        symbols: elem.label.symbols,
-                        position: alpha.count - 1)
-                    let intNode = SPPFNode<NodeLabel>.intermediate(
-                        label: intLabel, leftExtent: elem.leftExtent, rightExtent: elem.pivot)
-                    graph.addEdge(from: packed, to: intNode)
-                }
-            }
-
-            // ── Right child ─────────────────────────────────────────────────
-            if elem.pivot < elem.rightExtent, let lastSym = alpha.last {
-                addLeafOrSymbol(from: packed, symbol: lastSym,
-                                left: elem.pivot, right: elem.rightExtent,
-                                tokens: tokens, graph: graph, byKey: byKey, populate: populate)
-            }
-        }
-    }
-
-    populate(lhs: grammar.start, left: 0, right: n)
-    graph.cleanup()
-    return graph
-}
 
 /// Build an SPPF by expanding symbol and intermediate nodes from the BSR set.
 /// This mirrors the extraction used by the sibling Earley-Parser package.
@@ -369,39 +290,6 @@ private func makePackedNode(
     }
 }
 
-private struct SPPFLookupKey: Hashable {
-    let lhs: NonTerminal; let left, right: Int
-}
-
-private func addLeafOrSymbol(
-    from parent: SPPFNode<NodeLabel>,
-    symbol: Symbol,
-    left: Int, right: Int,
-    tokens: [String],
-    graph: SPPFGraph<NodeLabel>,
-    byKey: [SPPFLookupKey: [BSR<NodeLabel>]],
-    populate: (NonTerminal, Int, Int) -> Void
-) {
-    switch symbol {
-    case .terminal(let t):
-        let tok: String
-        if t.isEmpty {
-            tok = MetaTerminal.eps.rawValue
-        } else {
-            tok = left < tokens.count ? tokens[left] : t.description
-        }
-        graph.addEdge(from: parent, to:
-            SPPFNode<NodeLabel>.leaf(label: tok, leftExtent: left, rightExtent: right))
-    case .nonTerminal(let nt):
-        let child = SPPFNode<NodeLabel>.symbol(label: nt.name, leftExtent: left, rightExtent: right)
-        graph.addEdge(from: parent, to: child)
-        populate(nt, left, right)
-    case .metaSymbol(let ms):
-        graph.addEdge(from: parent, to:
-            SPPFNode<NodeLabel>.leaf(label: ms.rawValue, leftExtent: left, rightExtent: right))
-    }
-}
-
 // MARK: - Derivation extraction (debug / test utility)
 
 /// Extract one derivation tree from a BSR set as a human-readable string.
@@ -499,15 +387,20 @@ public final class EarleyTableParser {
     public let slTable:  SLParseTable
     public let elTable:  ELParseTable
 
-    /// When `true`, `parse(tokens:)` uses the extended-lookahead (EL)
-    /// algorithm instead of the simple-lookahead (SL) algorithm.
-    /// EL is strictly more precise for grammars with hidden left recursion.
-    /// Default: `false`.
-    public var useExtendedLookahead: Bool
+    /// Selects the extended-lookahead (EL) traversal instead of the
+    /// simple-lookahead (SL) traversal. The selection is fixed when the
+    /// parser is constructed, so a parser instance cannot change behaviour
+    /// while it is being shared or used by concurrent clients.
+    public let useExtendedLookahead: Bool
 
     // MARK: - Init
 
-    /// BUG 5 fix: always build both tables; algorithm is selected at call time.
+    /// Creates a parser whose traversal mode remains fixed for its lifetime.
+    ///
+    /// - Parameters:
+    ///   - grammar: The grammar to precompute.
+    ///   - useExtendedLookahead: `true` selects EL traversal; `false` selects
+    ///     SL traversal. The default is `false`.
     public init(grammar: Grammar, useExtendedLookahead: Bool = false) {
         self.grammar              = grammar
         self.nfa                  = buildEarleyNFA(grammar: grammar)
@@ -527,12 +420,7 @@ public final class EarleyTableParser {
     /// - Returns: `ParseResult<NodeLabel>` on acceptance.
     /// - Throws: `SyntaxError` if the input is not in the language.
     public func parse(tokens: [String]) throws -> ParseResult<NodeLabel> {
-        let raw: TableTraversalResult
-        if useExtendedLookahead {
-            raw = parseET(table: elTable, input: tokens)
-        } else {
-            raw = simpleET(table: slTable, input: tokens)
-        }
+        let raw = traverse(tokens)
 
         guard raw.accepted else {
             let joined = tokens.joined(separator: " ")
@@ -541,9 +429,7 @@ public final class EarleyTableParser {
                 in: joined,
                 reason: .unexpectedToken)
         }
-
-        let sppf = buildSPPF(from: raw.bsrSet, grammar: grammar, tokens: tokens)
-        return ParseResult(isSuccessful: true, bsr: raw.bsrSet, sppfGraph: sppf)
+        return makeParseResult(from: raw, tokens: tokens)
     }
 }
 
@@ -612,7 +498,7 @@ extension EarleyTableParser: GeneralizedParser {
     }
 }
 
-// MARK: - Tokenisation and range-mapping helpers
+// MARK: - TokenStream consumption
 
 extension EarleyTableParser {
 
@@ -630,35 +516,38 @@ extension EarleyTableParser {
             tokens.append(String(stream.source[range]))
             ranges.append(range)
         }
-        return (try parse(tokens: tokens), ranges)
-    }
 
-    @available(*, deprecated, message: "Use parse(stream:) with a TokenStream")
-    /// Split `string` on whitespace (omitting empty subsequences).
-    func tokenize(_ string: String) -> [String] {
-        string.split(separator: " ", omittingEmptySubsequences: true).map(String.init)
-    }
-
-    /// Build a per-token `Range<String.Index>` array by scanning `string`
-    /// for each whitespace-separated token in order.
-    ///
-    /// Required by SPPFGraph.buildParseTree / buildAllParseTrees (Parser module
-    /// TreeBuilder extension): they map token-index extents back to source ranges.
-    func tokenRanges(for tokens: [String], in string: String) -> [Range<String.Index>] {
-        var ranges: [Range<String.Index>] = []
-        ranges.reserveCapacity(tokens.count)
-        var search = string.startIndex
-
-        for token in tokens {
-            guard let range = string.range(of: token, range: search..<string.endIndex) else {
-                // Shouldn't happen if `tokens` came from `tokenize(string)`.
-                let idx = search
-                ranges.append(idx..<idx)
-                continue
+        let raw = traverse(tokens)
+        guard raw.accepted else {
+            let failureRange: Range<String.Index>
+            if let emptySet = raw.earleySets.indices.dropFirst().first(where: {
+                raw.earleySets[$0].isEmpty
+            }), ranges.indices.contains(emptySet - 1) {
+                failureRange = ranges[emptySet - 1]
+            } else {
+                failureRange = stream.source.endIndex..<stream.source.endIndex
             }
-            ranges.append(range)
-            search = range.upperBound
+            throw SyntaxError(
+                range: failureRange,
+                in: stream.source,
+                reason: .unexpectedToken)
         }
-        return ranges
+        return (makeParseResult(from: raw, tokens: tokens), ranges)
     }
+
+    private func traverse(_ tokens: [String]) -> TableTraversalResult {
+        if useExtendedLookahead {
+            return parseET(table: elTable, input: tokens)
+        }
+        return simpleET(table: slTable, input: tokens)
+    }
+
+    private func makeParseResult(
+        from raw: TableTraversalResult,
+        tokens: [String]
+    ) -> ParseResult<NodeLabel> {
+        let sppf = buildSPPF(from: raw.bsrSet, grammar: grammar, tokens: tokens)
+        return ParseResult(isSuccessful: true, bsr: raw.bsrSet, sppfGraph: sppf)
+    }
+
 }

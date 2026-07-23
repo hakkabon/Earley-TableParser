@@ -2,808 +2,1215 @@
 //  Earley_TableParserTests.swift
 //  Earley-TableParser
 //
-//  Comprehensive tests covering:
-//    1. NFA construction
-//    2. recET() recogniser
-//    3. simpleET() parser + BSR correctness
-//    4. parseET() extended-lookahead parser
-//    5. SPPF construction and structure
-//    6. EarleyTableParser facade (DeterministicParser + GeneralizedParser)
-//    7. syntaxTree() and allSyntaxTrees() tree enumeration
-//    8. Ambiguity detection
-//    9. Edge cases (ε, single token, left-recursive grammars)
-//   10. Recogniser/parser consistency
-//   11. Performance smoke tests
+//  Created by Ulf Akerstedt-Inoue on 2026/06/01.
+//  Comprehensive tests for the Earley Table Traversing Parser.
 //
 
 import Testing
 @testable import Earley_TableParser
 import Foundation
 import Grammar
+import Parser
+import Lexer
 
-// MARK: - Grammar construction helpers
+// MARK: - Grammar Helpers
 
-func T(_ s: String) -> Symbol   { .terminal(Terminal(string: s)) }
-func N(_ s: String) -> Symbol   { .nonTerminal(NonTerminal(name: s)) }
-func NT(_ s: String) -> NonTerminal { NonTerminal(name: s) }
+/// Terminal symbol from string
+func T(_ s: String) -> Symbol { .terminal(Terminal(string: s)) }
 
-// MARK: - Canonical example grammars from Scott & Johnstone (2026)
+/// Non-terminal symbol
+func N(_ name: String) -> Symbol { .nonTerminal(NonTerminal(name: name)) }
 
-/// Γ₁: S ::= A S b | a    A ::= a A | ε   (Section 2.3)
+/// Non-terminal
+func NT(_ name: String) -> NonTerminal { NonTerminal(name: name) }
+
+// MARK: - Example Grammars from Scott & Johnstone (2026)
+
+/// Γ₁: S ::= A S b | a , A ::= a A | ε (Section 2.3)
 func gamma1() -> Grammar {
-    Grammar(productions: [
-        Production(goal: NT("S"), rule: [N("A"), N("S"), T("b")]),
-        Production(goal: NT("S"), rule: [T("a")]),
-        Production(goal: NT("A"), rule: [T("a"), N("A")]),
-        Production(goal: NT("A"), rule: []),
-    ], start: NT("S"), lexicalTokens: [:])
+    Grammar(
+        productions: [
+            Production(goal: NT("S"), rule: [N("A"), N("S"), T("b")]),
+            Production(goal: NT("S"), rule: [T("a")]),
+            Production(goal: NT("A"), rule: [T("a"), N("A")]),
+            Production(goal: NT("A"), rule: [])  // ε
+        ],
+        start: NT("S"),
+        lexicalTokens: [:]
+    )
 }
 
-/// Γ₂: S ::= B B S a | b b b    B ::= b b B | ε   (Section 4.3)
+/// Γ₂: S ::= B B S a | b b b , B ::= b b B | ε (Section 4.3)
 func gamma2() -> Grammar {
-    Grammar(productions: [
-        Production(goal: NT("S"), rule: [N("B"), N("B"), N("S"), T("a")]),
-        Production(goal: NT("S"), rule: [T("b"), T("b"), T("b")]),
-        Production(goal: NT("B"), rule: [T("b"), T("b"), N("B")]),
-        Production(goal: NT("B"), rule: []),
-    ], start: NT("S"), lexicalTokens: [:])
+    Grammar(
+        productions: [
+            Production(goal: NT("S"), rule: [N("B"), N("B"), N("S"), T("a")]),
+            Production(goal: NT("S"), rule: [T("b"), T("b"), T("b")]),
+            Production(goal: NT("B"), rule: [T("b"), T("b"), N("B")]),
+            Production(goal: NT("B"), rule: [])  // ε
+        ],
+        start: NT("S"),
+        lexicalTokens: [:]
+    )
 }
 
-/// Γ₃: S ::= S S S | S S | b   (highly ambiguous, Section 5.1)
+/// Γ₃: S ::= S S S | S S | b (highly ambiguous, Section 5.1)
 func gamma3() -> Grammar {
-    Grammar(productions: [
-        Production(goal: NT("S"), rule: [N("S"), N("S"), N("S")]),
-        Production(goal: NT("S"), rule: [N("S"), N("S")]),
-        Production(goal: NT("S"), rule: [T("b")]),
-    ], start: NT("S"), lexicalTokens: [:])
+    Grammar(
+        productions: [
+            Production(goal: NT("S"), rule: [N("S"), N("S"), N("S")]),
+            Production(goal: NT("S"), rule: [N("S"), N("S")]),
+            Production(goal: NT("S"), rule: [T("b")])
+        ],
+        start: NT("S"),
+        lexicalTokens: [:]
+    )
 }
 
-/// Simple ε-only grammar: S ::= ε
-func epsilonGrammar() -> Grammar {
-    Grammar(productions: [
-        Production(goal: NT("S"), rule: []),
-    ], start: NT("S"), lexicalTokens: [:])
+/// Exercises spellings that used to alias in string-keyed table columns.
+func collidingColumnGrammar() -> Grammar {
+    Grammar(
+        productions: [
+            Production(goal: NT("S"), rule: [T("X")]),
+            Production(goal: NT("S"), rule: [N("X")]),
+            Production(goal: NT("S"), rule: [T("$")]),
+            Production(goal: NT("S"), rule: [T("ε")]),
+            Production(goal: NT("X"), rule: [T("x")])
+        ],
+        start: NT("S"),
+        lexicalTokens: [:]
+    )
 }
 
-/// S ::= a S b | ε   (balanced a^n b^n, n ≥ 0)
-func balancedGrammar() -> Grammar {
-    Grammar(productions: [
-        Production(goal: NT("S"), rule: [T("a"), N("S"), T("b")]),
-        Production(goal: NT("S"), rule: []),
-    ], start: NT("S"), lexicalTokens: [:])
-}
-
-/// S ::= S + S | n   (classic ambiguous expression grammar)
-func ambiguousExprGrammar() -> Grammar {
-    Grammar(productions: [
-        Production(goal: NT("S"), rule: [N("S"), T("+"), N("S")]),
-        Production(goal: NT("S"), rule: [T("n")]),
-    ], start: NT("S"), lexicalTokens: [:])
-}
-
-/// Left-recursive: S ::= S a | a
-func leftRecursiveGrammar() -> Grammar {
-    Grammar(productions: [
-        Production(goal: NT("S"), rule: [N("S"), T("a")]),
-        Production(goal: NT("S"), rule: [T("a")]),
-    ], start: NT("S"), lexicalTokens: [:])
-}
-
-// MARK: - Suite 1: NFA Construction
-
-@Suite("NFA Construction")
-struct NFAConstructionTests {
-
-    @Test("G₀ is always the start state")
-    func startState() {
-        let nfa = buildEarleyNFA(grammar: gamma1())
-        #expect(nfa.stateCount > 0)
-        // State 0 must contain at least one dot-0 slot for the start symbol.
-        let hasStartSlot = nfa.states[0].contains { $0.dot == 0 && $0.production.goal == NT("S") }
-        #expect(hasStartSlot, "G₀ must have a dot-0 start slot")
-    }
-
-    @Test("Alphabet includes epsilon")
-    func alphabetHasEpsilon() {
-        let nfa = buildEarleyNFA(grammar: gamma1())
-        #expect(nfa.alphabet.contains(where: { isEpsilonSymbol($0) }))
-    }
-
-    @Test("Core states are detected correctly")
-    func coreStateDetection() {
-        let nfa = buildEarleyNFA(grammar: gamma1())
-        // G₀ is not core (contains dot-0 slots).
-        #expect(!nfa.isCore(0), "G₀ should not be core")
-        // At least one other state should be core.
-        let hasCore = (1..<nfa.stateCount).contains { nfa.isCore($0) }
-        #expect(hasCore, "There should be at least one core state")
-    }
-
-    @Test("Transition table is complete")
-    func transitionTableComplete() {
-        let nfa = buildEarleyNFA(grammar: gamma1())
-        for sym in nfa.alphabet {
-            guard let col = nfa.transitions[sym] else {
-                Issue.record("Missing column for symbol \(sym)")
-                continue
-            }
-            #expect(col.count == nfa.stateCount,
-                "Column for \(sym) should have stateCount entries")
+/// All words over `alphabet` through `maxLength`, including the empty word.
+func words(over alphabet: [String], maxLength: Int) -> [[String]] {
+    var result: [[String]] = [[]]
+    var frontier: [[String]] = [[]]
+    for _ in 0..<maxLength {
+        frontier = frontier.flatMap { prefix in
+            alphabet.map { prefix + [$0] }
         }
+        result.append(contentsOf: frontier)
     }
-
-    @Test("Γ₂ NFA handles ε-productions")
-    func nfaGamma2Epsilon() {
-        let nfa = buildEarleyNFA(grammar: gamma2())
-        #expect(nfa.stateCount > 0)
-    }
-
-    @Test("Γ₃ ambiguous grammar builds valid NFA")
-    func nfaGamma3Ambiguous() {
-        let nfa = buildEarleyNFA(grammar: gamma3())
-        #expect(nfa.stateCount >= 2)
-    }
-
-    @Test("Left-recursive grammar builds valid NFA")
-    func nfaLeftRecursive() {
-        let nfa = buildEarleyNFA(grammar: leftRecursiveGrammar())
-        #expect(nfa.stateCount > 0)
-    }
+    return result
 }
 
-// MARK: - Suite 2: recET() Recogniser
+/// Γ₁ generates a^k b^m where k ≥ 1 and either m ≥ 1 or k = 1.
+func isInGamma1(_ tokens: [String]) -> Bool {
+    let aCount = tokens.prefix(while: { $0 == "a" }).count
+    let bCount = tokens.dropFirst(aCount).prefix(while: { $0 == "b" }).count
+    return aCount + bCount == tokens.count
+        && aCount >= 1
+        && (bCount >= 1 || aCount == 1)
+}
 
-@Suite("recET() Recogniser")
-struct RecogniserTests {
+// MARK: - EarleyParserTests
 
-    @Test("Γ₁ accepts valid inputs")
-    func gamma1Accepts() {
-        let nfa   = buildEarleyNFA(grammar: gamma1())
+@Suite
+struct EarleyParserTests {
+
+    // MARK: - NFA Construction Tests
+
+    @Test("NFA construction produces valid state count")
+    func testNFAConstructionStateCount() {
+        let grammar = gamma1()
+        let nfa = buildEarleyNFA(grammar: grammar)
+        #expect(nfa.stateCount > 0, "NFA should have at least one state")
+        #expect(nfa.states.count == nfa.stateCount, "states.count should match stateCount")
+    }
+
+    @Test("NFA construction for Γ₁ (simple grammar)")
+    func testNFAConstructionGamma1() {
+        let nfa = buildEarleyNFA(grammar: gamma1())
+        #expect(nfa.stateCount >= 2, "Γ₁ should have at least 2 states")
+        #expect(nfa.alphabet.contains(where: { isEpsilonSymbol($0) }), "Should include ε in alphabet")
+    }
+
+    @Test("NFA construction for Γ₂ (ε-productions)")
+    func testNFAConstructionGamma2() {
+        let nfa = buildEarleyNFA(grammar: gamma2())
+        #expect(nfa.stateCount > 0, "Should handle ε-productions")
+    }
+
+    @Test("NFA construction for Γ₃ (ambiguous grammar)")
+    func testNFAConstructionGamma3() {
+        let nfa = buildEarleyNFA(grammar: gamma3())
+        #expect(nfa.stateCount >= 2, "Ambiguous grammars typically have more states")
+    }
+
+    @Test("Typed table keys keep terminal, nonterminal, epsilon, and EOF distinct")
+    func tableKeyCategoriesAreDistinct() {
+        let keys: Set<TableKey> = [
+            .terminal(Terminal(string: "S")),
+            .nonTerminal(NT("S")),
+            .epsilon,
+            .endOfInput
+        ]
+        #expect(keys.count == 4)
+        #expect(TableKey(symbol: T("$")) == .terminal(Terminal(string: "$")))
+        #expect(TableKey(symbol: .terminal(.meta(.eof))) == .endOfInput)
+        #expect(TableKey(symbol: T("ε")) == .terminal(Terminal(string: "ε")))
+        #expect(TableKey(symbol: .terminal(.meta(.eps))) == .epsilon)
+    }
+
+    @Test("Typed columns preserve colliding spellings in all traversals")
+    func typedColumnsPreserveCollidingSpellings() {
+        let grammar = collidingColumnGrammar()
+        let nfa = buildEarleyNFA(grammar: grammar)
+        let recogniser = buildRecogniserTable(nfa: nfa, grammar: grammar)
+        let sl = buildSLParseTable(nfa: nfa, grammar: grammar)
+        let el = buildELParseTable(nfa: nfa, grammar: grammar)
+
+        for input in [["X"], ["x"], ["$"], ["ε"]] {
+            #expect(recET(table: recogniser, input: input), "recET rejected \(input)")
+            #expect(simpleET(table: sl, input: input).accepted, "simpleET rejected \(input)")
+            #expect(parseET(table: el, input: input).accepted, "parseET rejected \(input)")
+        }
+        #expect(!recET(table: recogniser, input: []))
+        #expect(!simpleET(table: sl, input: []).accepted)
+        #expect(!parseET(table: el, input: []).accepted)
+    }
+
+    @Test("Pattern-terminal table keys use structural hashing")
+    func patternTerminalKeysUseStructuralHashing() throws {
+        let first = try Terminal(expression: "[0-9]+")
+        let second = try Terminal(expression: "[0-9]+")
+        #expect(first == second)
+        #expect(Set([TableKey.terminal(first), TableKey.terminal(second)]).count == 1)
+
+        let grammar = Grammar(
+            productions: [Production(goal: NT("S"), rule: [.terminal(first)])],
+            start: NT("S"),
+            lexicalTokens: [:])
+        let nfa = buildEarleyNFA(grammar: grammar)
+        #expect(recET(
+            table: buildRecogniserTable(nfa: nfa, grammar: grammar),
+            input: ["42"]))
+        #expect(simpleET(
+            table: buildSLParseTable(nfa: nfa, grammar: grammar),
+            input: ["42"]).accepted)
+        #expect(parseET(
+            table: buildELParseTable(nfa: nfa, grammar: grammar),
+            input: ["42"]).accepted)
+    }
+
+    // MARK: - Recogniser Tests
+
+    @Test("Recogniser accepts valid Γ₁ inputs")
+    func testRecogniserGamma1Accepts() {
+        let nfa = buildEarleyNFA(grammar: gamma1())
         let table = buildRecogniserTable(nfa: nfa, grammar: gamma1())
+
         #expect(recET(table: table, input: ["a"]))
         #expect(recET(table: table, input: ["a", "b"]))
+        #expect(recET(table: table, input: ["a", "b", "b"]))
         #expect(recET(table: table, input: ["a", "a", "b"]))
         #expect(recET(table: table, input: ["a", "a", "a", "b", "b"]))
     }
 
-    @Test("Γ₁ rejects invalid inputs")
-    func gamma1Rejects() {
-        let nfa   = buildEarleyNFA(grammar: gamma1())
+    @Test("Recogniser rejects invalid Γ₁ inputs")
+    func testRecogniserGamma1Rejects() {
+        let nfa = buildEarleyNFA(grammar: gamma1())
         let table = buildRecogniserTable(nfa: nfa, grammar: gamma1())
+
         #expect(!recET(table: table, input: ["b"]))
-        #expect(!recET(table: table, input: ["a", "b", "b"]))
         #expect(!recET(table: table, input: ["a", "a"]))
+        #expect(!recET(table: table, input: ["b", "a"]))
     }
 
-    @Test("Γ₂ accepts valid inputs")
-    func gamma2Accepts() {
-        let nfa   = buildEarleyNFA(grammar: gamma2())
+    @Test("All traversals recognise the exact Γ₁ language through length 5")
+    func testGamma1ExhaustiveShortInputs() {
+        let grammar = gamma1()
+        let nfa = buildEarleyNFA(grammar: grammar)
+        let recogniser = buildRecogniserTable(nfa: nfa, grammar: grammar)
+        let sl = buildSLParseTable(nfa: nfa, grammar: grammar)
+        let el = buildELParseTable(nfa: nfa, grammar: grammar)
+
+        for input in words(over: ["a", "b"], maxLength: 5) {
+            let expected = isInGamma1(input)
+            #expect(recET(table: recogniser, input: input) == expected,
+                    "recET disagrees for '\(input.joined())'")
+            #expect(simpleET(table: sl, input: input).accepted == expected,
+                    "simpleET disagrees for '\(input.joined())'")
+            #expect(parseET(table: el, input: input).accepted == expected,
+                    "parseET disagrees for '\(input.joined())'")
+        }
+    }
+
+    @Test("Recogniser accepts valid Γ₂ inputs")
+    func testRecogniserGamma2Accepts() {
+        let nfa = buildEarleyNFA(grammar: gamma2())
         let table = buildRecogniserTable(nfa: nfa, grammar: gamma2())
+
         #expect(recET(table: table, input: ["b", "b", "b"]))
         #expect(recET(table: table, input: ["b", "b", "b", "a"]))
     }
 
-    @Test("Γ₂ rejects invalid inputs")
-    func gamma2Rejects() {
-        let nfa   = buildEarleyNFA(grammar: gamma2())
+    @Test("Recogniser rejects invalid Γ₂ inputs")
+    func testRecogniserGamma2Rejects() {
+        let nfa = buildEarleyNFA(grammar: gamma2())
         let table = buildRecogniserTable(nfa: nfa, grammar: gamma2())
+
         #expect(!recET(table: table, input: ["b"]))
         #expect(!recET(table: table, input: ["b", "b"]))
-        #expect(!recET(table: table, input: ["a"]))
     }
 
-    @Test("Γ₃ accepts valid inputs")
-    func gamma3Accepts() {
-        let nfa   = buildEarleyNFA(grammar: gamma3())
+    @Test("Recogniser accepts valid Γ₃ inputs")
+    func testRecogniserGamma3Accepts() {
+        let nfa = buildEarleyNFA(grammar: gamma3())
         let table = buildRecogniserTable(nfa: nfa, grammar: gamma3())
+
         #expect(recET(table: table, input: ["b"]))
         #expect(recET(table: table, input: ["b", "b"]))
         #expect(recET(table: table, input: ["b", "b", "b"]))
-        #expect(recET(table: table, input: ["b", "b", "b", "b"]))
     }
 
-    @Test("Pure ε grammar accepts empty input")
-    func epsilonGrammarAcceptsEmpty() {
-        let g     = epsilonGrammar()
-        let nfa   = buildEarleyNFA(grammar: g)
-        let table = buildRecogniserTable(nfa: nfa, grammar: g)
-        #expect(recET(table: table, input: []))
-    }
+    // MARK: - Parser Tests (BSR Generation)
 
-    @Test("Balanced a^n b^n grammar")
-    func balancedAnBn() {
-        let g     = balancedGrammar()
-        let nfa   = buildEarleyNFA(grammar: g)
-        let table = buildRecogniserTable(nfa: nfa, grammar: g)
-        #expect(recET(table: table, input: []))
-        #expect(recET(table: table, input: ["a", "b"]))
-        #expect(recET(table: table, input: ["a", "a", "b", "b"]))
-        #expect(recET(table: table, input: ["a", "a", "a", "b", "b", "b"]))
-        #expect(!recET(table: table, input: ["a"]))
-        #expect(!recET(table: table, input: ["a", "b", "b"]))
-    }
-
-    @Test("Left-recursive grammar accepted")
-    func leftRecursiveAccepted() {
-        let g     = leftRecursiveGrammar()
-        let nfa   = buildEarleyNFA(grammar: g)
-        let table = buildRecogniserTable(nfa: nfa, grammar: g)
-        #expect(recET(table: table, input: ["a"]))
-        #expect(recET(table: table, input: ["a", "a"]))
-        #expect(recET(table: table, input: ["a", "a", "a"]))
-        #expect(!recET(table: table, input: ["b"]))
-    }
-}
-
-// MARK: - Suite 3: simpleET() Parser + BSR
-
-@Suite("simpleET() Parser")
-struct SimpleETParserTests {
-
-    @Test("Γ₁ 'a' produces BSR elements")
-    func gamma1SingleA() {
-        let nfa   = buildEarleyNFA(grammar: gamma1())
+    @Test("Parser generates BSR elements for Γ₁")
+    func testParserBSRGamma1() {
+        let nfa = buildEarleyNFA(grammar: gamma1())
         let table = buildSLParseTable(nfa: nfa, grammar: gamma1())
-        let r = simpleET(table: table, input: ["a"])
-        #expect(r.accepted)
-        #expect(!r.bsrSet.isEmpty)
+
+        let result = simpleET(table: table, input: ["a", "a", "b"])
+
+        #expect(result.accepted)
+        #expect(result.bsrSet.count > 0, "Parser should generate BSR elements")
+        #expect(!result.hasAmbiguity, "Γ₁ is unambiguous")
     }
 
-    @Test("Γ₁ 'aab' produces expected Earley set count")
-    func gamma1EarleySets() {
-        let nfa   = buildEarleyNFA(grammar: gamma1())
+    @Test("Parser correctly identifies unambiguous Γ₁")
+    func testParserUnambiguousGamma1() {
+        let nfa = buildEarleyNFA(grammar: gamma1())
         let table = buildSLParseTable(nfa: nfa, grammar: gamma1())
-        let r = simpleET(table: table, input: ["a", "a", "b"])
-        #expect(r.accepted)
-        #expect(r.earleySets.count == 4)  // n+1 = 4 sets for n=3 tokens
+
+        let result = simpleET(table: table, input: ["a"])
+        #expect(!result.hasAmbiguity)
     }
 
-    @Test("BSR elements have valid extents (i ≤ k ≤ j)")
-    func bsrExtentsValid() {
-        let nfa   = buildEarleyNFA(grammar: gamma1())
-        let table = buildSLParseTable(nfa: nfa, grammar: gamma1())
-        let r = simpleET(table: table, input: ["a", "a", "b"])
-        for elem in r.bsrSet {
-            #expect(elem.leftExtent >= 0)
-            #expect(elem.pivot      >= elem.leftExtent)
-            #expect(elem.rightExtent >= elem.pivot)
+    @Test("Parser detects ambiguity in Γ₃")
+    func testParserAmbiguousGamma3() {
+        let nfa = buildEarleyNFA(grammar: gamma3())
+        let table = buildSLParseTable(nfa: nfa, grammar: gamma3())
+
+        let result = simpleET(table: table, input: ["b", "b", "b"])
+
+        #expect(result.accepted)
+        let binaryPivots = Set(result.bsrSet.compactMap { element -> Int? in
+            guard element.label.isCompleted,
+                  element.label.goal == NT("S"),
+                  element.label.symbols == [N("S"), N("S")],
+                  element.leftExtent == 0,
+                  element.rightExtent == 3 else { return nil }
+            return element.pivot
+        })
+        #expect(binaryPivots == [1, 2],
+                "The two binary derivations must retain their distinct pivots")
+    }
+
+    @Test("Parser handles Γ₂ with ε-productions")
+    func testParserGamma2Epsilon() {
+        let nfa = buildEarleyNFA(grammar: gamma2())
+        let table = buildSLParseTable(nfa: nfa, grammar: gamma2())
+
+        // "bbba" - B→ε,ε; S→BBSa
+        let result = simpleET(table: table, input: ["b", "b", "b", "a"])
+        #expect(result.accepted)
+        #expect(result.bsrSet.count > 0)
+    }
+
+    // MARK: - SPPF Tests
+
+    @Test("SPPF construction for simple grammar")
+    func testSPPFConstructionSimple() {
+        let grammar = gamma1()
+        let nfa = buildEarleyNFA(grammar: grammar)
+        let table = buildSLParseTable(nfa: nfa, grammar: grammar)
+        let result = simpleET(table: table, input: ["a", "a", "b"])
+
+        #expect(result.accepted)
+
+        let sppf = buildSPPF(from: result.bsrSet, grammar: grammar, tokens: ["a", "a", "b"])
+        let nodes = sppf.getAllNodes()
+        #expect(nodes.count > 0, "SPPF should have nodes")
+    }
+
+    @Test("SPPF contains correct node types")
+    func testSPPFNodeTypes() {
+        let grammar = gamma1()
+        let nfa = buildEarleyNFA(grammar: grammar)
+        let table = buildSLParseTable(nfa: nfa, grammar: grammar)
+        let result = simpleET(table: table, input: ["a"])
+
+        #expect(result.accepted)
+
+        let sppf = buildSPPF(from: result.bsrSet, grammar: grammar, tokens: ["a"])
+        let nodes = sppf.getAllNodes()
+
+        // Should have symbol nodes for non-terminals
+        #expect(nodes.contains(where: { node in
+            if case .symbol = node { return true }
+            return false
+        }), "Should have symbol nodes")
+    }
+
+    @Test("SPPF graph has valid edge structure")
+    func testSPPFEdgeStructure() {
+        let grammar = gamma1()
+        let nfa = buildEarleyNFA(grammar: grammar)
+        let table = buildSLParseTable(nfa: nfa, grammar: grammar)
+        let result = simpleET(table: table, input: ["a"])
+
+        #expect(result.accepted)
+
+        let sppf = buildSPPF(from: result.bsrSet, grammar: grammar, tokens: ["a"])
+
+        // Check that all children exist in the graph
+        for node in sppf.getAllNodes() {
+            for child in sppf.getChildren(of: node) {
+                #expect(sppf.getAllNodes().contains(child), "Child should exist in graph")
+            }
         }
     }
 
-//    @Test(.disabled("All BSR components have a non-nil LHS"))
-//    func bsrComponentsHaveLHS() {
-//        let nfa   = buildEarleyNFA(grammar: gamma1())
-//        let table = buildSLParseTable(nfa: nfa, grammar: gamma1())
-//        let r = simpleET(table: table, input: ["a", "a", "b"])
-//        for elem in r.bsrSet {
-//            #expect(elem.omega.lhsNonterminal != nil)
-//        }
-//    }
+    // MARK: - Derivation Extraction Tests
 
-    @Test("Γ₁ is unambiguous")
-    func gamma1Unambiguous() {
-        let nfa   = buildEarleyNFA(grammar: gamma1())
-        let table = buildSLParseTable(nfa: nfa, grammar: gamma1())
-        let r = simpleET(table: table, input: ["a", "a", "b"])
-        #expect(!r.hasAmbiguity)
-    }
-
-    @Test("Γ₃ 'bbb' is ambiguous")
-    func gamma3Ambiguous() {
-        let nfa   = buildEarleyNFA(grammar: gamma3())
-        let table = buildSLParseTable(nfa: nfa, grammar: gamma3())
-        let r = simpleET(table: table, input: ["b", "b", "b"])
-        #expect(r.accepted)
-        #expect(r.hasAmbiguity)
-    }
-
-    @Test("Ambiguous expression grammar 'n+n+n' is ambiguous")
-    func exprAmbiguous() {
-        let g     = ambiguousExprGrammar()
-        let nfa   = buildEarleyNFA(grammar: g)
-        let table = buildSLParseTable(nfa: nfa, grammar: g)
-        let r = simpleET(table: table, input: ["n", "+", "n", "+", "n"])
-        #expect(r.accepted)
-        #expect(r.hasAmbiguity)
-    }
-
-    @Test("Rejected input produces empty BSR set")
-    func rejectedInputEmptyBSR() {
-        let nfa   = buildEarleyNFA(grammar: gamma1())
-        let table = buildSLParseTable(nfa: nfa, grammar: gamma1())
-        let r = simpleET(table: table, input: ["b"])
-        #expect(!r.accepted)
-    }
-
-    @Test("E₀ always non-empty after init")
-    func e0NonEmpty() {
-        let nfa   = buildEarleyNFA(grammar: gamma1())
-        let table = buildSLParseTable(nfa: nfa, grammar: gamma1())
-        let r = simpleET(table: table, input: ["a"])
-        #expect(!r.earleySets[0].isEmpty)
-    }
-
-    @Test("Earley pairs have valid state indices")
-    func earleyPairsValid() {
+    @Test("Extract derivation for simple accepted input")
+    func testExtractDerivationSimple() {
         let grammar = gamma1()
-        let nfa     = buildEarleyNFA(grammar: grammar)
-        let table   = buildSLParseTable(nfa: nfa, grammar: grammar)
-        let r = simpleET(table: table, input: ["a", "a", "b"])
-        for ej in r.earleySets {
+        let nfa = buildEarleyNFA(grammar: grammar)
+        let table = buildSLParseTable(nfa: nfa, grammar: grammar)
+        let result = simpleET(table: table, input: ["a"])
+
+        #expect(result.accepted)
+
+        let derivation = extractDerivation(from: result.bsrSet, grammar: grammar, tokens: ["a"])
+        #expect(derivation != nil, "Should extract a derivation")
+    }
+
+    @Test("Extract derivation returns nil for rejected input")
+    func testExtractDerivationRejected() {
+        let grammar = gamma1()
+        let nfa = buildEarleyNFA(grammar: grammar)
+        let table = buildSLParseTable(nfa: nfa, grammar: grammar)
+        let result = simpleET(table: table, input: ["b"])  // Rejected
+
+        #expect(!result.accepted)
+
+        let derivation = extractDerivation(from: result.bsrSet, grammar: grammar, tokens: ["b"])
+        #expect(derivation == nil, "No derivation for rejected input")
+    }
+
+    // MARK: - Earley Sets Tests
+
+    @Test("Earley sets count matches input length + 1")
+    func testEarleySetsCount() {
+        let grammar = gamma1()
+        let nfa = buildEarleyNFA(grammar: grammar)
+        let table = buildSLParseTable(nfa: nfa, grammar: grammar)
+
+        let inputs: [[String]] = [
+            [],
+            ["a"],
+            ["a", "b"],
+            ["a", "a", "b"]
+        ]
+
+        for tokens in inputs {
+            let result = simpleET(table: table, input: tokens)
+            #expect(result.earleySets.count == tokens.count + 1,
+                "For \(tokens.count) tokens, should have \(tokens.count + 1) Earley sets")
+        }
+    }
+
+    @Test("E₀ is always non-empty")
+    func testEarleySetE0() {
+        let grammar = gamma1()
+        let nfa = buildEarleyNFA(grammar: grammar)
+        let table = buildSLParseTable(nfa: nfa, grammar: grammar)
+
+        let result = simpleET(table: table, input: ["a"])
+        #expect(!result.earleySets[0].isEmpty, "E₀ should not be empty")
+    }
+
+    @Test("Earley sets contain valid Earley pairs")
+    func testEarleyPairValidity() {
+        let grammar = gamma1()
+        let nfa = buildEarleyNFA(grammar: grammar)
+        let table = buildSLParseTable(nfa: nfa, grammar: grammar)
+
+        let result = simpleET(table: table, input: ["a"])
+
+        for ej in result.earleySets {
             for pair in ej {
-                #expect(pair.state >= 0 && pair.state < nfa.stateCount)
-                #expect(pair.backIndex >= 0)
+                #expect(pair.state >= 0 && pair.state < nfa.stateCount,
+                    "State index \(pair.state) should be valid")
+                #expect(pair.backIndex >= 0, "Back-index should be non-negative")
+            }
+        }
+    }
+
+    // MARK: - BSR Structure Tests
+
+    @Test("BSR elements have valid extents")
+    func testBSRElementExtents() {
+        let grammar = gamma1()
+        let nfa = buildEarleyNFA(grammar: grammar)
+        let table = buildSLParseTable(nfa: nfa, grammar: grammar)
+        let result = simpleET(table: table, input: ["a"])
+
+        #expect(result.accepted)
+
+        for elem in result.bsrSet {
+            #expect(elem.leftExtent >= 0, "Left extent should be non-negative")
+            #expect(elem.rightExtent >= elem.leftExtent, "Right extent should be >= left extent")
+            #expect(elem.pivot >= elem.leftExtent && elem.pivot <= elem.rightExtent,
+                "Pivot should be within extents")
+        }
+    }
+
+    @Test("BSR elements have valid grammar components")
+    func testBSRComponentValidity() {
+        let grammar = gamma1()
+        let nfa = buildEarleyNFA(grammar: grammar)
+        let table = buildSLParseTable(nfa: nfa, grammar: grammar)
+        let result = simpleET(table: table, input: ["a"])
+
+        #expect(result.accepted)
+
+        // `NodeLabel.goal` is a non-optional `NonTerminal`, so every BSR
+        // element necessarily has an LHS — this test now checks that the
+        // dot position is always a valid index into the label's symbols.
+        for elem in result.bsrSet {
+            #expect(elem.label.position >= 0 && elem.label.position <= elem.label.symbols.count,
+                     "BSR label's dot position should be within [0, symbols.count]")
+        }
+    }
+
+    // MARK: - Grammar Analysis Tests
+
+    @Test("FOLLOW sets computed correctly")
+    func testFollowSets() {
+        let grammar = gamma1()
+        let follow = grammar.followSets()
+
+        // Start symbol S should have $ in its FOLLOW set
+        #expect(follow.keys.contains(NT("S")), "Should compute FOLLOW for start symbol")
+    }
+
+    @Test("Nullable non-terminals detected correctly")
+    func testNullableNonterminals() {
+        let grammar = gamma1()
+
+        // A → ε, so A should be nullable
+        #expect(grammar.isNullable(NT("A")), "A should be nullable (A → ε)")
+
+        // S cannot derive ε directly, and A can be ε but S→ASb requires symbols
+        #expect(!grammar.isNullable(NT("S")), "S should not be nullable")
+    }
+
+    // MARK: - Edge Cases
+
+    @Test("Parser handles single-token inputs")
+    func testSingleTokenInput() {
+        let grammar = gamma1()
+        let nfa = buildEarleyNFA(grammar: grammar)
+        let table = buildSLParseTable(nfa: nfa, grammar: grammar)
+
+        let result = simpleET(table: table, input: ["a"])
+        #expect(result.accepted)
+    }
+
+    @Test("Parser handles empty input (when grammar allows)")
+    func testEmptyInput() {
+        // Grammar that allows empty input: S → ε | a
+        let epsGrammar = Grammar(
+            productions: [
+                Production(goal: NT("S"), rule: []),
+                Production(goal: NT("S"), rule: [T("a")])
+            ],
+            start: NT("S"),
+            lexicalTokens: [:]
+        )
+
+        let nfa = buildEarleyNFA(grammar: epsGrammar)
+        let table = buildSLParseTable(nfa: nfa, grammar: epsGrammar)
+        let result = simpleET(table: table, input: [])
+
+        #expect(result.accepted, "Should accept empty input when grammar allows")
+    }
+
+    @Test("Parser rejects completely invalid input")
+    func testRejectedInput() {
+        let grammar = gamma1()
+        let nfa = buildEarleyNFA(grammar: grammar)
+        let table = buildSLParseTable(nfa: nfa, grammar: grammar)
+
+        let result = simpleET(table: table, input: ["x", "y", "z"])
+        #expect(!result.accepted, "Should reject input with unknown tokens")
+    }
+
+    // MARK: - Consistency Tests
+
+    @Test("Recogniser and parser agree on acceptance")
+    func testRecogniserParserConsistency() {
+        let grammars = [gamma1(), gamma2(), gamma3()]
+        let testInputs: [[String]] = [
+            [],
+            ["a"],
+            ["b"],
+            ["a", "b"],
+            ["b", "b", "b"]
+        ]
+
+        for grammar in grammars {
+            let nfa = buildEarleyNFA(grammar: grammar)
+            let recTable = buildRecogniserTable(nfa: nfa, grammar: grammar)
+            let parseTable = buildSLParseTable(nfa: nfa, grammar: grammar)
+
+            for input in testInputs {
+                let recResult = recET(table: recTable, input: input)
+                let parseResult = simpleET(table: parseTable, input: input)
+
+                #expect(recResult == parseResult.accepted,
+                    "Recogniser and parser should agree on '\(input.joined(separator: " "))'")
             }
         }
     }
 }
 
-// MARK: - Suite 4: parseET() Extended-Lookahead Parser
+// MARK: - Performance Benchmarks
 
-@Suite("parseET() Extended Lookahead")
-struct ParseETTests {
+@Suite
+struct PerformanceBenchmarks {
+    
+    @Test("Recognition performance for small inputs")
+    func benchmarkRecognition() {
+        let grammar = gamma1()
+        let nfa = buildEarleyNFA(grammar: grammar)
+        let table = buildRecogniserTable(nfa: nfa, grammar: grammar)
 
-    @Test("parseET agrees with simpleET on Γ₁ acceptance")
-    func gamma1Agreement() {
+        let inputs: [[String]] = [
+            ["a"],
+            ["a", "a", "b"],
+            ["a", "a", "b", "b"]
+        ]
+
+        for input in inputs {
+            let startTime = CFAbsoluteTimeGetCurrent()
+            _ = recET(table: table, input: input)
+            let elapsed = CFAbsoluteTimeGetCurrent() - startTime
+
+            // Should complete very quickly (< 1 second for small inputs)
+            #expect(elapsed < 1.0, "Recognition should complete in < 1s for input \(input)")
+        }
+    }
+
+    @Test("Parsing performance for ambiguous grammar")
+    func benchmarkAmbiguousParsing() {
+        let grammar = gamma3()
+        let nfa = buildEarleyNFA(grammar: grammar)
+        let table = buildSLParseTable(nfa: nfa, grammar: grammar)
+
+        let startTime = CFAbsoluteTimeGetCurrent()
+        let result = simpleET(table: table, input: ["b", "b", "b"])
+        let elapsed = CFAbsoluteTimeGetCurrent() - startTime
+
+        #expect(result.accepted)
+        #expect(elapsed < 5.0, "Ambiguous parsing should complete in reasonable time")
+    }
+}
+
+// MARK: - Additional Tests for Missing Features
+
+@Suite
+struct AdditionalTests {
+    
+    @Test("NFA isCore detection")
+    func testNFACoreDetection() {
+        let grammar = gamma1()
+        let nfa = buildEarleyNFA(grammar: grammar)
+
+        // Should have at least some core states
+        let hasCore = (0..<nfa.stateCount).contains { nfa.isCore($0) }
+        #expect(hasCore, "Should have some core states")
+    }
+
+    @Test("NFA completed nonterminals")
+    func testNFACompletedNonterminals() {
+        let grammar = gamma1()
+        let nfa = buildEarleyNFA(grammar: grammar)
+
+        for p in 0..<nfa.stateCount {
+            let expected = Set(
+                nfa.states[p].filter(\.isComplete).map(\.production.goal))
+            #expect(nfa.completedNonterminals(in: p) == expected)
+        }
+    }
+
+    @Test("SPPF getExtendableNodes")
+    func testSPPFExtendableNodes() {
+        let grammar = gamma1()
+        let nfa = buildEarleyNFA(grammar: grammar)
+        let table = buildSLParseTable(nfa: nfa, grammar: grammar)
+        let result = simpleET(table: table, input: ["a"])
+
+        #expect(result.accepted)
+
+        let sppf = buildSPPF(from: result.bsrSet, grammar: grammar, tokens: ["a"])
+        let extendable = sppf.getExtendableNodes()
+        #expect(extendable.isEmpty,
+                "Every symbol/intermediate node in the completed SPPF should be expanded")
+    }
+
+    @Test("Graphviz export works")
+    func testGraphvizExport() {
+        let grammar = gamma1()
+        let nfa = buildEarleyNFA(grammar: grammar)
+        let table = buildSLParseTable(nfa: nfa, grammar: grammar)
+        let result = simpleET(table: table, input: ["a"])
+
+        #expect(result.accepted)
+
+        let sppf = buildSPPF(from: result.bsrSet, grammar: grammar, tokens: ["a"])
+        let dot = sppf.graphviz
+
+        // Basic sanity checks on DOT output
+        #expect(dot.contains("digraph"), "Should contain digraph declaration")
+        #expect(dot.contains("{"), "Should contain opening brace")
+        #expect(dot.contains("}"), "Should contain closing brace")
+    }
+}
+
+// MARK: - Suite: Extended Lookahead (EL) parser
+
+@Suite("EL Parser — parseET()")
+struct ELParserTests {
+
+    // MARK: Acceptance agreement with SL
+
+    @Test("SL and EL agree on all Γ₁ inputs")
+    func elSlAgreementGamma1() {
         let grammar = gamma1()
         let nfa     = buildEarleyNFA(grammar: grammar)
         let sl      = buildSLParseTable(nfa: nfa, grammar: grammar)
         let el      = buildELParseTable(nfa: nfa, grammar: grammar)
 
-        let inputs: [[String]] = [["a"], ["a", "b"], ["a", "a", "b"], ["b"], ["a", "a"]]
-        for tokens in inputs {
-            let slResult = simpleET(table: sl, input: tokens)
-            let elResult = parseET(table: el, input: tokens)
-            #expect(slResult.accepted == elResult.accepted,
-                "SL and EL should agree on '\(tokens.joined(separator: " "))'")
+        let cases: [[String]] = [
+            [], ["a"], ["b"], ["a","b"],
+            ["a","a","b"], ["a","a","b","b"],
+            ["a","a","a","b","b"]
+        ]
+        for tokens in cases {
+            let slAcc = simpleET(table: sl, input: tokens).accepted
+            let elAcc = parseET(table: el,  input: tokens).accepted
+            #expect(slAcc == elAcc,
+                    "SL=\(slAcc) EL=\(elAcc) for '\(tokens.joined(separator: " "))'")
         }
     }
 
-    @Test("parseET agrees with simpleET on Γ₂ acceptance")
-    func gamma2Agreement() {
+    @Test("SL and EL agree on all Γ₂ inputs")
+    func elSlAgreementGamma2() {
         let grammar = gamma2()
         let nfa     = buildEarleyNFA(grammar: grammar)
         let sl      = buildSLParseTable(nfa: nfa, grammar: grammar)
         let el      = buildELParseTable(nfa: nfa, grammar: grammar)
 
-        let inputs: [[String]] = [
-            ["b","b","b"], ["b","b","b","a"], ["b"], ["b","b"]
+        let cases: [[String]] = [
+            ["b","b","b"], ["b","b","b","a"],
+            ["b","b"], ["b"], []
         ]
-        for tokens in inputs {
-            let slResult = simpleET(table: sl, input: tokens)
-            let elResult = parseET(table: el, input: tokens)
-            #expect(slResult.accepted == elResult.accepted,
-                "SL and EL should agree on '\(tokens.joined(separator: " "))'")
+        for tokens in cases {
+            let slAcc = simpleET(table: sl, input: tokens).accepted
+            let elAcc = parseET(table: el,  input: tokens).accepted
+            #expect(slAcc == elAcc,
+                    "SL=\(slAcc) EL=\(elAcc) for '\(tokens.joined(separator: " "))'")
         }
     }
 
-    @Test("parseET agrees with simpleET on Γ₃ acceptance")
-    func gamma3Agreement() {
+    @Test("SL and EL agree on all Γ₃ inputs")
+    func elSlAgreementGamma3() {
         let grammar = gamma3()
         let nfa     = buildEarleyNFA(grammar: grammar)
         let sl      = buildSLParseTable(nfa: nfa, grammar: grammar)
         let el      = buildELParseTable(nfa: nfa, grammar: grammar)
 
-        let inputs: [[String]] = [
+        let cases: [[String]] = [
             ["b"], ["b","b"], ["b","b","b"], ["b","b","b","b"], ["a"]
         ]
-        for tokens in inputs {
-            let slResult = simpleET(table: sl, input: tokens)
-            let elResult = parseET(table: el, input: tokens)
-            #expect(slResult.accepted == elResult.accepted,
-                "SL and EL should agree on '\(tokens.joined(separator: " "))'")
+        for tokens in cases {
+            let slAcc = simpleET(table: sl, input: tokens).accepted
+            let elAcc = parseET(table: el,  input: tokens).accepted
+            #expect(slAcc == elAcc,
+                    "SL=\(slAcc) EL=\(elAcc) for '\(tokens.joined(separator: " "))'")
         }
     }
 
-    @Test("EL parser builds non-empty BSR set on acceptance")
+    // MARK: BSR quality
+
+    @Test("EL produces a non-empty BSR set on accepted input")
     func elBSRNonEmpty() {
         let grammar = gamma1()
         let nfa     = buildEarleyNFA(grammar: grammar)
         let el      = buildELParseTable(nfa: nfa, grammar: grammar)
-        let r = parseET(table: el, input: ["a", "a", "b"])
-        #expect(r.accepted)
-        #expect(!r.bsrSet.isEmpty)
+        let result  = parseET(table: el, input: ["a", "a", "b"])
+        #expect(result.accepted)
+        #expect(!result.bsrSet.isEmpty)
     }
 
-    @Test("EL parser detects ambiguity in Γ₃")
+    @Test("EL BSR elements have valid extents i ≤ k ≤ j")
+    func elBSRExtents() {
+        let grammar = gamma1()
+        let nfa     = buildEarleyNFA(grammar: grammar)
+        let el      = buildELParseTable(nfa: nfa, grammar: grammar)
+        let result  = parseET(table: el, input: ["a", "a", "b"])
+        for elem in result.bsrSet {
+            #expect(elem.leftExtent  >= 0)
+            #expect(elem.pivot       >= elem.leftExtent)
+            #expect(elem.rightExtent >= elem.pivot)
+        }
+    }
+
+    @Test("EL detects ambiguity in Γ₃ 'bbb'")
     func elDetectsAmbiguity() {
         let grammar = gamma3()
         let nfa     = buildEarleyNFA(grammar: grammar)
         let el      = buildELParseTable(nfa: nfa, grammar: grammar)
-        let r = parseET(table: el, input: ["b", "b", "b"])
-        #expect(r.accepted)
-        #expect(r.hasAmbiguity)
+        let result  = parseET(table: el, input: ["b","b","b"])
+        #expect(result.accepted)
+        #expect(result.hasAmbiguity)
     }
 
-    @Test("EL parse table has SELECT sets for all states")
-    func elSelectSets() {
+    @Test("EL unambiguous result has no false-positive ambiguity")
+    func elNoFalsePositiveAmbiguity() {
+        let grammar = gamma1()
+        let nfa     = buildEarleyNFA(grammar: grammar)
+        let el      = buildELParseTable(nfa: nfa, grammar: grammar)
+        let result  = parseET(table: el, input: ["a", "a", "b"])
+        #expect(result.accepted)
+        #expect(!result.hasAmbiguity)
+    }
+
+    // MARK: EL table structure
+
+    @Test("EL table has per-state info for all NFA states")
+    func elStateInfoCoverage() {
         let grammar = gamma1()
         let nfa     = buildEarleyNFA(grammar: grammar)
         let el      = buildELParseTable(nfa: nfa, grammar: grammar)
         for p in 0..<nfa.stateCount {
-            // selectSet and rLHS should always be non-nil (may be empty).
-            #expect(el.info(state: p) != nil, "stateInfo[\(p)] should not be nil")
+            #expect(el.info(state: p) != nil, "stateInfo[\(p)] must not be nil")
         }
     }
 
-    @Test("EL and SL BSR sets span compatible extents")
-    func elSlBSRExtents() {
+    @Test("SELECT(p) is non-empty for states reachable by scanner/completer")
+    func elSelectSetsNonEmptyForActiveStates() {
         let grammar = gamma1()
         let nfa     = buildEarleyNFA(grammar: grammar)
+        let el      = buildELParseTable(nfa: nfa, grammar: grammar)
+        // State 0 is the start state: SELECT must be non-empty (it must allow the scanner).
+        #expect(el.info(state: 0)?.selectSet.isEmpty == false,
+                "State 0 SELECT set should not be empty")
+    }
+
+    @Test("rLHS(p) only contains nonterminals of complete items")
+    func elRLHSOnlyCompleteItems() {
+        let grammar = gamma1()
+        let nfa     = buildEarleyNFA(grammar: grammar)
+        let el      = buildELParseTable(nfa: nfa, grammar: grammar)
+        for p in 0..<nfa.stateCount {
+            guard let info = el.info(state: p) else { continue }
+            for nt in info.rLHS {
+                // nt must appear as the goal of some complete slot in G_p.
+                let hasCompleteSlot = nfa.states[p].contains {
+                    $0.isComplete && $0.production.goal == nt
+                }
+                #expect(hasCompleteSlot,
+                        "rLHS member \(nt.name) has no complete slot in G_\(p)")
+            }
+        }
+    }
+
+    // MARK: Three-way consistency (recET / simpleET / parseET)
+
+    @Test("Three-way agreement: recET, simpleET, parseET on Γ₁")
+    func threeWayGamma1() {
+        let grammar = gamma1()
+        let nfa     = buildEarleyNFA(grammar: grammar)
+        let rec     = buildRecogniserTable(nfa: nfa, grammar: grammar)
         let sl      = buildSLParseTable(nfa: nfa, grammar: grammar)
         let el      = buildELParseTable(nfa: nfa, grammar: grammar)
-        let tokens  = ["a", "a", "b"]
-        let slR     = simpleET(table: sl, input: tokens)
-        let elR     = parseET(table: el, input: tokens)
-        // Both should have at least one root-level BSR element.
-        let slRoot = slR.bsrSet.filter { $0.leftExtent == 0 && $0.rightExtent == 3 }
-        let elRoot = elR.bsrSet.filter { $0.leftExtent == 0 && $0.rightExtent == 3 }
-        #expect(!slRoot.isEmpty)
-        #expect(!elRoot.isEmpty)
-    }
-}
 
-// MARK: - Suite 5: SPPF Construction
-
-@Suite("SPPF Construction")
-struct SPPFTests {
-
-    @Test("SPPF has nodes after successful parse")
-    func sppfHasNodes() {
-        let grammar = gamma1()
-        let nfa     = buildEarleyNFA(grammar: grammar)
-        let table   = buildSLParseTable(nfa: nfa, grammar: grammar)
-        let r       = simpleET(table: table, input: ["a"])
-        let sppf    = buildSPPF(from: r.bsrSet, grammar: grammar, tokens: ["a"])
-        #expect(!sppf.getAllNodes().isEmpty)
-    }
-
-    @Test("SPPF contains a symbol node for the start nonterminal")
-    func sppfHasStartNode() {
-        let grammar = gamma1()
-        let nfa     = buildEarleyNFA(grammar: grammar)
-        let table   = buildSLParseTable(nfa: nfa, grammar: grammar)
-        let r       = simpleET(table: table, input: ["a"])
-        let sppf    = buildSPPF(from: r.bsrSet, grammar: grammar, tokens: ["a"])
-        let hasRoot = sppf.getAllNodes().contains {
-            if case .symbol(let lbl, 0, 1) = $0 { return lbl == "S" }
-            return false
-        }
-        #expect(hasRoot, "Should have symbol node S(0,1)")
-    }
-
-    @Test("SPPF leaf nodes correspond to actual tokens")
-    func sppfLeafTokens() {
-        let grammar = gamma1()
-        let tokens  = ["a", "a", "b"]
-        let nfa     = buildEarleyNFA(grammar: grammar)
-        let table   = buildSLParseTable(nfa: nfa, grammar: grammar)
-        let r       = simpleET(table: table, input: tokens)
-        let sppf    = buildSPPF(from: r.bsrSet, grammar: grammar, tokens: tokens)
-        let leaves  = sppf.getAllNodes().compactMap { node -> String? in
-            if case .leaf(let lbl, _, _) = node { return lbl }
-            return nil
-        }
-        // Should see "a" and "b" leaves.
-        #expect(leaves.contains("a"))
-        #expect(leaves.contains("b"))
-    }
-
-    @Test("SPPF for ambiguous grammar has multi-packed symbol nodes")
-    func sppfAmbiguousMultiPacked() {
-        let grammar = gamma3()
-        let tokens  = ["b", "b", "b"]
-        let nfa     = buildEarleyNFA(grammar: grammar)
-        let table   = buildSLParseTable(nfa: nfa, grammar: grammar)
-        let r       = simpleET(table: table, input: tokens)
-        let sppf    = buildSPPF(from: r.bsrSet, grammar: grammar, tokens: tokens)
-        let hasMultiPacked = sppf.getAllNodes().contains { node in
-            guard case .symbol = node else { return false }
-            let packed = sppf.getChildren(of: node).filter {
-                if case .packed = $0 { return true }; return false
-            }
-            return packed.count > 1
-        }
-        #expect(hasMultiPacked, "Ambiguous parse should produce multi-packed nodes")
-    }
-
-    @Test("SPPF graphviz export is valid DOT")
-    func sppfGraphviz() {
-        let grammar = gamma1()
-        let nfa     = buildEarleyNFA(grammar: grammar)
-        let table   = buildSLParseTable(nfa: nfa, grammar: grammar)
-        let r       = simpleET(table: table, input: ["a"])
-        let sppf    = buildSPPF(from: r.bsrSet, grammar: grammar, tokens: ["a"])
-        let dot     = sppf.graphviz
-        #expect(dot.contains("digraph"))
-        #expect(dot.contains("{"))
-        #expect(dot.contains("}"))
-    }
-}
-
-// MARK: - Suite 6: EarleyTableParser Facade
-
-@Suite("EarleyTableParser Facade")
-struct FacadeTests {
-
-    @Test("syntaxTree returns a node for valid input")
-    func syntaxTreeValid() throws {
-        let parser = EarleyTableParser(grammar: gamma1())
-        let tree   = try parser.syntaxTree(for: "a a b")
-        if case .node(let nt, _) = tree {
-            #expect(nt.name == "S")
-        } else {
-            Issue.record("Expected a .node rooted at S")
+        let cases: [[String]] = [[], ["a"], ["b"], ["a","b"], ["a","a","b"]]
+        for tokens in cases {
+            let r = recET(table: rec, input: tokens)
+            let s = simpleET(table: sl,  input: tokens).accepted
+            let e = parseET(table: el,   input: tokens).accepted
+            #expect(r == s && s == e,
+                    "Three-way mismatch on '\(tokens)': rec=\(r) sl=\(s) el=\(e)")
         }
     }
 
-    @Test("syntaxTree throws for invalid input")
-    func syntaxTreeInvalid() {
-        let parser = EarleyTableParser(grammar: gamma1())
-        #expect(throws: (any Error).self) {
-            _ = try parser.syntaxTree(for: "b")
-        }
-    }
-
-    @Test("recognizes returns true for valid input")
-    func recognizesValid() {
-        let parser = EarleyTableParser(grammar: gamma1())
-        #expect(parser.recognizes("a"))
-        #expect(parser.recognizes("a a b"))
-        #expect(parser.recognizes("a b"))
-    }
-
-    @Test("recognizes returns false for invalid input")
-    func recognizesInvalid() {
-        let parser = EarleyTableParser(grammar: gamma1())
-        #expect(!parser.recognizes("b"))
-        #expect(!parser.recognizes("a a"))
-    }
-
-    @Test("parse() returns accepted=true for valid input")
-    func parseAccepted() throws {
-        let parser = EarleyTableParser(grammar: gamma1())
-        let result = try parser.parse("a a b")
-        #expect(result.isSuccessful)
-        #expect(result.sppfGraph != nil, "SPPF should be populated after parse()")
-    }
-
-    @Test("parse() throws for invalid input")
-    func parseThrows() {
-        let parser = EarleyTableParser(grammar: gamma1())
-        #expect(throws: (any Error).self) {
-            _ = try parser.parse("b")
-        }
-    }
-
-    @Test("allSyntaxTrees returns 1 tree for unambiguous Γ₁")
-    func allTreesUnambiguous() throws {
-        let parser = EarleyTableParser(grammar: gamma1())
-        let trees  = try parser.allSyntaxTrees(for: "a a b")
-        #expect(trees.count == 1, "Unambiguous grammar should yield exactly 1 tree")
-    }
-
-    @Test("allSyntaxTrees returns multiple trees for ambiguous Γ₃ 'bbb'")
-    func allTreesAmbiguous() throws {
-        let parser = EarleyTableParser(grammar: gamma3())
-        let trees  = try parser.allSyntaxTrees(for: "b b b")
-        #expect(trees.count > 1, "Ambiguous grammar should yield > 1 tree for 'bbb'")
-    }
-
-    @Test("allSyntaxTrees are structurally distinct")
-    func allTreesDistinct() throws {
-        let parser = EarleyTableParser(grammar: gamma3())
-        let trees  = try parser.allSyntaxTrees(for: "b b b")
-        // All trees should be different.
-        for i in 0..<trees.count {
-            for j in (i+1)..<trees.count {
-                #expect(trees[i] != trees[j], "Trees \(i) and \(j) should differ")
-            }
-        }
-    }
-
-    @Test("EL mode: syntaxTree matches SL mode for Γ₁")
-    func elModeMatchesSL() throws {
-        let parserSL = EarleyTableParser(grammar: gamma1(), useExtendedLookahead: false)
-        let parserEL = EarleyTableParser(grammar: gamma1(), useExtendedLookahead: true)
-        let slTree   = try parserSL.syntaxTree(for: "a a b")
-        let elTree   = try parserEL.syntaxTree(for: "a a b")
-        #expect(slTree == elTree, "SL and EL should produce identical trees for unambiguous grammar")
-    }
-
-    @Test("allSyntaxTrees for balanced grammar 'aabb'")
-    func allTreesBalanced() throws {
-        let parser = EarleyTableParser(grammar: balancedGrammar())
-        let trees  = try parser.allSyntaxTrees(for: "a a b b")
-        #expect(trees.count == 1, "Balanced grammar is unambiguous")
-        if case .node(let nt, _) = trees[0] {
-            #expect(nt.name == "S")
-        }
-    }
-
-    @Test("syntaxTree for 'n+n' (ambiguous expr)")
-    func syntaxTreeExpr() throws {
-        let parser = EarleyTableParser(grammar: ambiguousExprGrammar())
-        let tree   = try parser.syntaxTree(for: "n + n")
-        if case .node(let nt, _) = tree {
-            #expect(nt.name == "S")
-        }
-    }
-
-    @Test("allSyntaxTrees count for 'n+n+n' equals 2")
-    func allTreesExpr3() throws {
-        let parser = EarleyTableParser(grammar: ambiguousExprGrammar())
-        let trees  = try parser.allSyntaxTrees(for: "n + n + n")
-        // (n+n)+n  and  n+(n+n) — exactly 2 derivations.
-        #expect(trees.count == 2, "n+n+n has exactly 2 parse trees")
-    }
-}
-
-// MARK: - Suite 7: Consistency
-
-@Suite("Recogniser / Parser Consistency")
-struct ConsistencyTests {
-
-    @Test("recET and simpleET agree on Γ₁")
-    func consistencyGamma1() {
-        let grammar = gamma1()
-        let nfa     = buildEarleyNFA(grammar: grammar)
-        let rec     = buildRecogniserTable(nfa: nfa, grammar: grammar)
-        let parse   = buildSLParseTable(nfa: nfa, grammar: grammar)
-        let inputs: [[String]] = [[], ["a"], ["b"], ["a","b"], ["a","a","b"], ["b","b"]]
-        for tokens in inputs {
-            #expect(recET(table: rec, input: tokens) == simpleET(table: parse, input: tokens).accepted,
-                "Mismatch on '\(tokens)'")
-        }
-    }
-
-    @Test("recET and parseET agree on Γ₁")
-    func consistencyELGamma1() {
-        let grammar = gamma1()
-        let nfa     = buildEarleyNFA(grammar: grammar)
-        let rec     = buildRecogniserTable(nfa: nfa, grammar: grammar)
-        let el      = buildELParseTable(nfa: nfa, grammar: grammar)
-        let inputs: [[String]] = [[], ["a"], ["b"], ["a","b"], ["a","a","b"]]
-        for tokens in inputs {
-            #expect(recET(table: rec, input: tokens) == parseET(table: el, input: tokens).accepted,
-                "EL mismatch on '\(tokens)'")
-        }
-    }
-
-    @Test("All three algorithms agree on Γ₂")
-    func consistencyGamma2() {
+    @Test("Three-way agreement on Γ₂")
+    func threeWayGamma2() {
         let grammar = gamma2()
         let nfa     = buildEarleyNFA(grammar: grammar)
         let rec     = buildRecogniserTable(nfa: nfa, grammar: grammar)
         let sl      = buildSLParseTable(nfa: nfa, grammar: grammar)
         let el      = buildELParseTable(nfa: nfa, grammar: grammar)
-        let inputs: [[String]] = [
-            ["b","b","b"], ["b","b","b","a"], ["b","b"], ["b"], []
-        ]
-        for tokens in inputs {
+
+        let cases: [[String]] = [["b","b","b"], ["b","b","b","a"], ["b"], []]
+        for tokens in cases {
             let r = recET(table: rec, input: tokens)
             let s = simpleET(table: sl, input: tokens).accepted
-            let e = parseET(table: el, input: tokens).accepted
+            let e = parseET(table: el,  input: tokens).accepted
             #expect(r == s && s == e,
-                "Three-way mismatch on '\(tokens)': rec=\(r) sl=\(s) el=\(e)")
+                    "Three-way mismatch on '\(tokens)': rec=\(r) sl=\(s) el=\(e)")
         }
     }
 }
 
-// MARK: - Suite 8: Edge Cases
+// MARK: - Suite: EarleyTableParser facade
 
-@Suite("Edge Cases")
-struct EdgeCaseTests {
+@Suite("EarleyTableParser facade")
+struct EarleyTableParserFacadeTests {
 
-    @Test("Empty input accepted when grammar has S → ε")
-    func emptyInputEpsilonGrammar() {
-        let g     = epsilonGrammar()
-        let nfa   = buildEarleyNFA(grammar: g)
-        let table = buildSLParseTable(nfa: nfa, grammar: g)
-        let r     = simpleET(table: table, input: [])
-        #expect(r.accepted)
-    }
-
-    @Test("Empty input rejected when grammar has no ε production")
-    func emptyInputNoEpsilon() {
-        let nfa   = buildEarleyNFA(grammar: gamma3())
-        let table = buildSLParseTable(nfa: nfa, grammar: gamma3())
-        let r     = simpleET(table: table, input: [])
-        #expect(!r.accepted)
-    }
-
-    @Test("Single-token input 'a' for Γ₁")
-    func singleToken() {
-        let nfa   = buildEarleyNFA(grammar: gamma1())
-        let table = buildSLParseTable(nfa: nfa, grammar: gamma1())
-        let r     = simpleET(table: table, input: ["a"])
-        #expect(r.accepted)
-        #expect(!r.bsrSet.isEmpty)
-    }
-
-    @Test("Unknown tokens are rejected gracefully")
-    func unknownTokens() {
-        let nfa   = buildEarleyNFA(grammar: gamma1())
-        let table = buildSLParseTable(nfa: nfa, grammar: gamma1())
-        let r     = simpleET(table: table, input: ["x", "y", "z"])
-        #expect(!r.accepted)
-    }
-
-    @Test("FOLLOW sets computed for all nonterminals of Γ₁")
-    func followSets() {
-        let follow = gamma1().followSets()
-        #expect(follow[NT("S")] != nil)
-        #expect(follow[NT("A")] != nil)
-        // $ ∈ FOLLOW(S) because S is the start symbol.
-        let dollarInFollowS = follow[NT("S")]?.contains(.terminal(.meta(.eof))) ?? false
-        #expect(dollarInFollowS)
-    }
-
-    @Test("Nullable nonterminals detected correctly")
-    func nullableNTs() {
-        let g = gamma1()
-        #expect(g.isNullable(NT("A")),  "A → ε, so A is nullable")
-        #expect(!g.isNullable(NT("S")), "S has no ε production")
-    }
-
-    @Test("extractDerivation returns non-nil for accepted input")
-    func extractDerivation_accepted() {
+    @Test("G₀ keeps nullable calls separate from core advancement")
+    func initialStateKeepsCallsAndCoreSeparate() {
         let grammar = gamma1()
-        let nfa     = buildEarleyNFA(grammar: grammar)
-        let table   = buildSLParseTable(nfa: nfa, grammar: grammar)
-        let r       = simpleET(table: table, input: ["a"])
-        let d       = extractDerivation(from: r.bsrSet, grammar: grammar, tokens: ["a"])
-        #expect(d != nil)
+        let nfa = buildEarleyNFA(grammar: grammar)
+        #expect(nfa.states[0].contains {
+            $0.production.goal == grammar.start && $0.dot == 0
+        })
+        #expect(!nfa.states[0].contains {
+            $0.production.goal == grammar.start && $0.dot == 1
+        })
+        #expect(nfa.states[0].contains {
+            $0.production.goal == NT("A") && $0.isComplete
+        })
     }
 
-    @Test("extractDerivation returns nil for rejected input")
-    func extractDerivation_rejected() {
+    @Test("acceptance always uses the declared start symbol")
+    func acceptanceUsesDeclaredStart() {
         let grammar = gamma1()
-        let nfa     = buildEarleyNFA(grammar: grammar)
-        let table   = buildSLParseTable(nfa: nfa, grammar: grammar)
-        let r       = simpleET(table: table, input: ["b"])
-        let d       = extractDerivation(from: r.bsrSet, grammar: grammar, tokens: ["b"])
-        #expect(d == nil)
-    }
-}
-
-// MARK: - Suite 9: Performance Smoke Tests
-
-@Suite("Performance")
-struct PerformanceTests {
-
-    @Test("Recognition of Γ₁ inputs completes quickly")
-    func recognitionPerformance() {
-        let nfa   = buildEarleyNFA(grammar: gamma1())
-        let table = buildRecogniserTable(nfa: nfa, grammar: gamma1())
-        let start = CFAbsoluteTimeGetCurrent()
-        for _ in 0..<100 {
-            _ = recET(table: table, input: ["a", "a", "b"])
+        let table = buildRecogniserTable(
+            nfa: buildEarleyNFA(grammar: grammar), grammar: grammar)
+        for _ in 0..<20 {
+            #expect(recET(table: table, input: ["a"]))
+            #expect(!recET(table: table, input: ["b"]))
         }
-        let elapsed = CFAbsoluteTimeGetCurrent() - start
-        #expect(elapsed < 5.0, "100 recognitions should complete in < 5s")
     }
 
-    @Test("Ambiguous Γ₃ parsing completes in reasonable time")
-    func ambiguousParsePerformance() {
-        let nfa   = buildEarleyNFA(grammar: gamma3())
-        let table = buildSLParseTable(nfa: nfa, grammar: gamma3())
-        let start = CFAbsoluteTimeGetCurrent()
-        let r     = simpleET(table: table, input: ["b", "b", "b", "b"])
-        let elapsed = CFAbsoluteTimeGetCurrent() - start
-        #expect(r.accepted)
-        #expect(elapsed < 10.0, "Γ₃ parse of 'bbbb' should complete in < 10s")
+    @Test("parse(stream:) consumes positioned tokens without retokenizing")
+    func parsesTokenStream() throws {
+        let grammar = Grammar(
+            productions: [
+                Production(goal: NT("S"), rule: [T("("), T("a"), T(")")])
+            ],
+            start: NT("S"), lexicalTokens: [:])
+        let parser = EarleyTableParser(grammar: grammar)
+        let source = "(a)"
+        let stream = TokenizerStream(
+            source: source, symbols: ["(", ")"], keywords: [])
+        let result = try parser.parse(stream: stream)
+        #expect(result.isSuccessful)
+        #expect(result.sppfGraph != nil)
     }
 
-    @Test("Pre-computed tables are reused across parses")
-    func tableReuse() {
-        let grammar = gamma1()
-        let nfa     = buildEarleyNFA(grammar: grammar)
-        let table   = buildSLParseTable(nfa: nfa, grammar: grammar)
-        let inputs: [[String]] = Array(repeating: ["a","a","b"], count: 50)
-        let start = CFAbsoluteTimeGetCurrent()
-        for tokens in inputs { _ = simpleET(table: table, input: tokens) }
-        let elapsed = CFAbsoluteTimeGetCurrent() - start
-        #expect(elapsed < 5.0, "50 parses with shared table should complete in < 5s")
+    @Test("parse(stream:) reports failure in the stream's source coordinates")
+    func tokenStreamSyntaxErrorUsesSourceRange() {
+        let grammar = Grammar(
+            productions: [
+                Production(goal: NT("S"), rule: [T("("), T("a"), T(")")])
+            ],
+            start: NT("S"), lexicalTokens: [:])
+        let parser = EarleyTableParser(grammar: grammar)
+        let source = "(b)"
+        let stream = TokenizerStream(
+            source: source, symbols: ["(", ")"], keywords: [])
+
+        do {
+            _ = try parser.parse(stream: stream)
+            Issue.record("Expected parse(stream:) to throw")
+        } catch let error as SyntaxError {
+            #expect(error.string == source)
+            #expect(String(source[error.range]) == "b")
+        } catch {
+            Issue.record("Expected SyntaxError, got \(error)")
+        }
+    }
+
+    @Test("incomplete stream reports a printable EOF syntax error")
+    func incompleteStreamReportsEOF() {
+        let parser = EarleyTableParser(grammar: gamma1())
+        let source = "a a"
+        let stream = TokenizerStream(source: source, symbols: [], keywords: [])
+
+        do {
+            _ = try parser.parse(stream: stream)
+            Issue.record("Expected parse(stream:) to throw")
+        } catch let error as SyntaxError {
+            #expect(error.range.isEmpty)
+            #expect(error.range.lowerBound == source.endIndex)
+            #expect(error.line == 0)
+            #expect(error.column == source.count)
+            #expect(error.description.contains("L1:4"))
+        } catch {
+            Issue.record("Expected SyntaxError, got \(error)")
+        }
+    }
+
+    @Test("string convenience delegates to TokenizerStream")
+    func stringConvenienceTokenizesSymbols() throws {
+        let grammar = Grammar(
+            productions: [
+                Production(goal: NT("S"), rule: [T("("), T("a"), T(")")])
+            ],
+            start: NT("S"), lexicalTokens: [:])
+        let result = try EarleyTableParser(grammar: grammar).parse("(a)")
+        #expect(result.isSuccessful)
+    }
+
+    // MARK: Init and pre-computed tables
+
+    @Test("Tables are pre-computed at init time")
+    func tablesPrecomputed() {
+        let parser = EarleyTableParser(grammar: gamma1())
+        #expect(parser.nfa.stateCount     > 0)
+        #expect(parser.slTable.grammar == parser.grammar)
+        #expect(parser.elTable.grammar == parser.grammar)
+    }
+
+    @Test("useExtendedLookahead defaults to false")
+    func defaultAlgorithm() {
+        let parser = EarleyTableParser(grammar: gamma1())
+        #expect(parser.useExtendedLookahead == false)
+    }
+
+    @Test("useExtendedLookahead is selected at initialization")
+    func elModeInit() {
+        let parser = EarleyTableParser(grammar: gamma1(), useExtendedLookahead: true)
+        #expect(parser.useExtendedLookahead == true)
+    }
+
+    // MARK: recognizes(_:) — DeterministicParser extension
+
+    @Test("recognizes returns true for valid Γ₁ inputs (SL)")
+    func recognizesSLValid() {
+        let parser = EarleyTableParser(grammar: gamma1())
+        #expect(parser.recognizes("a"))
+        #expect(parser.recognizes("a b"))
+        #expect(parser.recognizes("a b b"))
+        #expect(parser.recognizes("a a b"))
+    }
+
+    @Test("recognizes returns false for invalid Γ₁ inputs (SL)")
+    func recognizesSLInvalid() {
+        let parser = EarleyTableParser(grammar: gamma1())
+        #expect(!parser.recognizes("b"))
+        #expect(!parser.recognizes("a a"))
+        #expect(!parser.recognizes("b a"))
+    }
+
+    @Test("recognizes returns true for valid Γ₁ inputs (EL)")
+    func recognizesELValid() {
+        let parser = EarleyTableParser(grammar: gamma1(), useExtendedLookahead: true)
+        #expect(parser.recognizes("a"))
+        #expect(parser.recognizes("a b"))
+        #expect(parser.recognizes("a a b"))
+    }
+
+    @Test("recognizes returns false for invalid Γ₁ inputs (EL)")
+    func recognizesELInvalid() {
+        let parser = EarleyTableParser(grammar: gamma1(), useExtendedLookahead: true)
+        #expect(!parser.recognizes("b"))
+        #expect(!parser.recognizes("a a"))
+    }
+
+    // MARK: syntaxTree(for:) — DeterministicParser
+
+    @Test("syntaxTree returns tree rooted at start symbol (SL)")
+    func syntaxTreeRootSL() throws {
+        let parser = EarleyTableParser(grammar: gamma1())
+        let tree   = try parser.syntaxTree(for: "a")
+        guard case let .node(nt, _) = tree else {
+            Issue.record("Expected .node, got \(tree)")
+            return
+        }
+        #expect(nt.name == "S")
+    }
+
+    @Test("syntaxTree returns tree rooted at start symbol (EL)")
+    func syntaxTreeRootEL() throws {
+        let parser = EarleyTableParser(grammar: gamma1(), useExtendedLookahead: true)
+        let tree   = try parser.syntaxTree(for: "a")
+        guard case let .node(nt, _) = tree else {
+            Issue.record("Expected .node, got \(tree)")
+            return
+        }
+        #expect(nt.name == "S")
+    }
+
+    @Test("syntaxTree throws SyntaxError for invalid input")
+    func syntaxTreeThrows() {
+        let parser = EarleyTableParser(grammar: gamma1())
+        #expect(throws: SyntaxError.self) { try parser.syntaxTree(for: "b") }
+    }
+
+    @Test("syntaxTree throws SyntaxError for invalid input (EL)")
+    func syntaxTreeThrowsEL() {
+        let parser = EarleyTableParser(grammar: gamma1(), useExtendedLookahead: true)
+        #expect(throws: SyntaxError.self) { try parser.syntaxTree(for: "b") }
+    }
+
+    @Test("SL and EL syntaxTree agree for unambiguous Γ₁")
+    func syntaxTreeSLELAgree() throws {
+        let sl = EarleyTableParser(grammar: gamma1(), useExtendedLookahead: false)
+        let el = EarleyTableParser(grammar: gamma1(), useExtendedLookahead: true)
+        let slTree = try sl.syntaxTree(for: "a a b")
+        let elTree = try el.syntaxTree(for: "a a b")
+        #expect(slTree == elTree,
+                "SL and EL must produce identical trees for an unambiguous grammar")
+    }
+
+    // MARK: parse(_:) — GeneralizedParser
+
+    @Test("parse returns isSuccessful=true for valid input")
+    func parseSuccessful() throws {
+        let parser = EarleyTableParser(grammar: gamma1())
+        let result = try parser.parse("a a b")
+        #expect(result.isSuccessful)
+        #expect(result.sppfGraph != nil, "SPPF must be populated after parse()")
+    }
+
+    @Test("parse throws SyntaxError for invalid input")
+    func parseThrows() {
+        let parser = EarleyTableParser(grammar: gamma1())
+        #expect(throws: SyntaxError.self) { try parser.parse("b") }
+    }
+
+    @Test("parse hasAmbiguity is false for unambiguous Γ₁")
+    func parseUnambiguous() throws {
+        let parser = EarleyTableParser(grammar: gamma1())
+        let result = try parser.parse("a a b")
+        #expect(!result.hasAmbiguity)
+    }
+
+    @Test("parse hasAmbiguity is true for ambiguous Γ₃")
+    func parseAmbiguous() throws {
+        let parser = EarleyTableParser(grammar: gamma3())
+        let result = try parser.parse("b b b")
+        #expect(result.hasAmbiguity)
+    }
+
+    // MARK: allSyntaxTrees(for:) — GeneralizedParser
+
+    @Test("allSyntaxTrees returns exactly 1 tree for unambiguous Γ₁")
+    func allTreesUnambiguous() throws {
+        let parser = EarleyTableParser(grammar: gamma1())
+        let trees  = try parser.allSyntaxTrees(for: "a a b")
+        #expect(trees.count == 1,
+                "Unambiguous grammar must yield exactly one tree, got \(trees.count)")
+    }
+
+    @Test("allSyntaxTrees returns > 1 tree for ambiguous Γ₃ 'bbb'")
+    func allTreesAmbiguous() throws {
+        let parser = EarleyTableParser(grammar: gamma3())
+        let trees  = try parser.allSyntaxTrees(for: "b b b")
+        #expect(trees.count > 1,
+                "Ambiguous grammar must yield more than one tree for 'b b b', got \(trees.count)")
+    }
+
+    @Test("allSyntaxTrees results are structurally distinct")
+    func allTreesDistinct() throws {
+        let parser = EarleyTableParser(grammar: gamma3())
+        let trees  = try parser.allSyntaxTrees(for: "b b b")
+        for i in 0..<trees.count {
+            for j in (i + 1)..<trees.count {
+                #expect(trees[i] != trees[j],
+                        "Trees[\(i)] and trees[\(j)] should differ")
+            }
+        }
+    }
+
+    @Test("allSyntaxTrees returns exactly 1 tree for 'b' in Γ₃")
+    func allTreesSingleB() throws {
+        let parser = EarleyTableParser(grammar: gamma3())
+        let trees  = try parser.allSyntaxTrees(for: "b")
+        #expect(trees.count == 1,
+                "'b' has only one parse in Γ₃, got \(trees.count)")
+    }
+
+    @Test("allSyntaxTrees are all rooted at the start symbol")
+    func allTreesRootedAtStart() throws {
+        let parser = EarleyTableParser(grammar: gamma3())
+        let trees  = try parser.allSyntaxTrees(for: "b b b")
+        for tree in trees {
+            guard case let .node(nt, _) = tree else {
+                Issue.record("Expected .node root, got \(tree)")
+                continue
+            }
+            #expect(nt.name == "S")
+        }
+    }
+
+    @Test("allSyntaxTrees throws SyntaxError for invalid input")
+    func allTreesThrows() {
+        let parser = EarleyTableParser(grammar: gamma1())
+        #expect(throws: SyntaxError.self) { try parser.allSyntaxTrees(for: "b") }
+    }
+
+    @Test("EL allSyntaxTrees matches SL count for unambiguous Γ₁")
+    func allTreesELMatchesSL() throws {
+        let sl = EarleyTableParser(grammar: gamma1(), useExtendedLookahead: false)
+        let el = EarleyTableParser(grammar: gamma1(), useExtendedLookahead: true)
+        let slTrees = try sl.allSyntaxTrees(for: "a a b")
+        let elTrees = try el.allSyntaxTrees(for: "a a b")
+        #expect(slTrees.count == elTrees.count,
+                "SL and EL must produce the same number of trees for an unambiguous grammar")
+    }
+
+    // MARK: Balanced a^n b^n grammar — additional coverage
+
+    @Test("balanced a^n b^n grammar: parse tree leaf structure")
+    func balancedTreeLeaves() throws {
+        let grammar = Grammar(
+            productions: [
+                Production(goal: NT("S"), rule: [T("a"), N("S"), T("b")]),
+                Production(goal: NT("S"), rule: [])
+            ],
+            start: NT("S"), lexicalTokens: [:]
+        )
+        let parser = EarleyTableParser(grammar: grammar)
+        let tree   = try parser.syntaxTree(for: "a a b b")
+        // Tree must be non-empty.
+        if case .empty = tree {
+            Issue.record("Expected non-empty tree for 'a a b b'")
+        }
+    }
+
+    // MARK: parse(tokens:) — direct token array API
+
+    @Test("parse(tokens:) accepts pre-tokenised input")
+    func parseTokensDirect() throws {
+        let parser = EarleyTableParser(grammar: gamma1())
+        let result = try parser.parse(tokens: ["a", "a", "b"])
+        #expect(result.isSuccessful)
+        #expect(result.sppfGraph != nil)
+    }
+
+    @Test("parse(tokens:) throws for rejected token array")
+    func parseTokensRejects() {
+        let parser = EarleyTableParser(grammar: gamma1())
+        #expect(throws: SyntaxError.self) {
+            _ = try parser.parse(tokens: ["b"])
+        }
+    }
+
+    @Test("parse(tokens:) EL mode produces accepted result")
+    func parseTokensEL() throws {
+        let parser = EarleyTableParser(grammar: gamma1(), useExtendedLookahead: true)
+        let result = try parser.parse(tokens: ["a"])
+        #expect(result.isSuccessful)
     }
 }

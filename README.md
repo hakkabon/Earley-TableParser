@@ -36,7 +36,7 @@ Grammar (context-free)
 buildEarleyNFA()          ← computed once, O(|G|³) in grammar size
        │
        │  G₀ … G_q
-       │  entailment-closed sets of grammar slots
+       │  core move sets and called-only sets of grammar slots
        │
        ├──► buildSLParseTable()          buildELParseTable()
        │    𝒯_Γ^SL(p,x)=(m,A,χ₁,χ₂)    𝒯_Γ^EL(p,x)=(m,χ₁,χ₂)
@@ -58,7 +58,10 @@ simpleET(table:input:)    parseET(table:input:)
              └── allSyntaxTrees(for:) → [ParseTree]
 ```
 
-The `Grammar`, `BSR`, `SPPFGraph`, `SPPFNode`, `ParseResult`, `DeterministicParser`, and `GeneralizedParser` types all come from the [hakkabon/Parser](https://github.com/hakkabon/Parser) module, which this package aligns with exactly.
+`Grammar`, `Production`, and the grammar symbol types come from
+[hakkabon/Grammar](https://github.com/hakkabon/Grammar). `BSR`, `SPPFGraph`,
+`SPPFNode`, `ParseResult`, `DeterministicParser`, and `GeneralizedParser` come
+from [hakkabon/Parser](https://github.com/hakkabon/Parser).
 
 ---
 
@@ -115,9 +118,12 @@ let rawResult = try parser.parse(tokens: ["a", "a", "b"])
 let stream = TokenizerStream(source: "a a b")
 let streamedResult = try parser.parse(stream: stream)
 
-// 6. Switch to extended lookahead (Section 7.3)
-parser.useExtendedLookahead = true
-let elTree = try parser.syntaxTree(for: "a a b")
+// 6. Select extended lookahead when constructing a parser (Section 7.3).
+// The traversal mode is immutable for the parser's lifetime.
+let extendedParser = EarleyTableParser(
+    grammar: grammar,
+    useExtendedLookahead: true)
+let elTree = try extendedParser.syntaxTree(for: "a a b")
 ```
 
 ---
@@ -133,7 +139,10 @@ A **grammar slot** `X ::= α · β` identifies a dot position inside a productio
 Built once from the grammar by computing two functions (Section 4.2):
 
 - **`calls(M)`** — closes a set of slots under left-null calls: if `X ::= α·Yβ ∈ M` and `α ⟹* ε`, all slots `Y ::= ω·γ` where `ω ⟹* ε` are added transitively.
-- **`move(M, x)`** — advances every slot in M whose next symbol is `x`, then closes under `calls`.
+- **`move(M, x)`** — for an ordinary grammar symbol, advances every slot in
+  `M` whose next symbol is `x`. An explicit epsilon transition enters the
+  corresponding called-only state, preserving the different Earley origins
+  of advanced and newly called items.
 
 The BFS over reachable `move`-states produces the NFA states `G₀, G₁, … G_q`, analogous to LR(0) items but without determinisation.
 
@@ -152,7 +161,12 @@ Each entry `𝒯_Γ^SL(p, x) = (m, A_{p,x}, χ₁, χ₂)`:
 | `χ₁` | `m(G_p, x)` — BSR components for the direct `x`-transition |
 | `χ₂` | `em(G_p, x)` — BSR components for nullable contributions at the target |
 
-Pattern terminals (regex, character range, string list) are matched via `resolveKey(forToken:)`, which maps a raw token to the column key its entry is stored under.
+Every table uses `TableKey` rather than a string as its column identifier.
+Its `.terminal`, `.nonTerminal`, `.epsilon`, and `.endOfInput` cases prevent
+equal spellings from aliasing—for example, a terminal `"S"` is distinct from
+the nonterminal `S`, and a literal `"$"` is distinct from synthetic EOF.
+Pattern terminals (regex, character range, and string list) are matched by
+`key(forToken:)`; an exact literal terminal takes precedence over a pattern.
 
 ### EL Parse Table — `𝒯_Γ^EL` *(new in this revision)*
 
@@ -226,7 +240,7 @@ public final class EarleyTableParser {
     public let nfa:      EarleyNFA
     public let slTable:  SLParseTable
     public let elTable:  ELParseTable
-    public var useExtendedLookahead: Bool   // default: false
+    public let useExtendedLookahead: Bool   // immutable; default: false
     public init(grammar: Grammar, useExtendedLookahead: Bool = false)
 
     // Core method (both SL and EL route through here)
@@ -306,7 +320,10 @@ The following bugs were corrected in this revision:
 
 **4. `reconstructChildren` for multi-symbol productions** — Previously returned a bare extent string `"[i…j via k]"` instead of recursing into the BSR set. Replaced with a proper recursive binary descent that handles every production shape.
 
-**5. `EarleyTableParser.init` table selection** — Building only the SL table when `useExtendedLookahead == false` meant the EL table was unavailable after construction. Fixed: both tables are always built at `init` time (they are cheap relative to parsing); the algorithm is selected at call time inside `parse(tokens:)`.
+**5. `EarleyTableParser.init` table selection** — Both tables are built at
+initialization and `useExtendedLookahead` selects the traversal for the
+lifetime of that parser. The immutable selection prevents a shared parser
+from changing behaviour between calls.
 
 **6. `EarleyTableParser.parse(tokens:)` unimplemented** — The method dispatches to `simpleET` or `parseET`, builds the SPPF, and returns `ParseResult<NodeLabel>`.
 
@@ -318,7 +335,14 @@ The following bugs were corrected in this revision:
 
 ## New Features
 
-- **Extended-lookahead parser `parseET()`** — the `parseET()` function and the `ELParseTable` / `ELStateInfo` / `ELTableEntry` types. Toggle with `parser.useExtendedLookahead = true`. Uses `SELECT(p)` and `rLHS(p)` per state instead of the FOLLOW-based `A_{p,x}`.
+- **Extended-lookahead parser `parseET()`** — the `parseET()` function and the
+  `ELParseTable` / `ELStateInfo` / `ELTableEntry` types. Select it with
+  `EarleyTableParser(grammar: grammar, useExtendedLookahead: true)`. It uses
+  `SELECT(p)` and `rLHS(p)` per state instead of the FOLLOW-based `A_{p,x}`.
+
+- **Typed table columns** — recogniser, SL, EL, and `SELECT` lookups use
+  `TableKey`, keeping terminals, nonterminals, epsilon, and EOF separate even
+  when their textual descriptions are equal.
 
 - **`EarleyTableParser` public facade** — `EarleyTableParser` now fully conforms to both `DeterministicParser` and `GeneralizedParser` from the [hakkabon/Parser](https://github.com/hakkabon/Parser) module. `syntaxTree(for:)` and `allSyntaxTrees(for:)` delegate to `SPPFGraph.buildParseTree` / `buildAllParseTrees` (Parser module `TreeBuilder` extension) so tree construction is shared across parser implementations.
 
@@ -330,7 +354,7 @@ The following bugs were corrected in this revision:
 
 ## Test Coverage
 
-Nine suites, ~55 test cases (Swift Testing):
+Five suites, 84 test cases (Swift Testing):
 
 | Suite | What it covers |
 |---|---|
@@ -354,7 +378,7 @@ swift test
 |---|---|
 | [hakkabon/Grammar](https://github.com/hakkabon/Grammar) | `Grammar`, `Production`, `NonTerminal`, `Terminal`, `Symbol` |
 | [hakkabon/Parser](https://github.com/hakkabon/Parser) | `BSR`, `SPPFGraph`, `SPPFNode`, `ParseResult`, `DeterministicParser`, `GeneralizedParser`, `TreeBuilder` |
-| [hakkabon/GrammarTokenizer](https://github.com/hakkabon/GrammarTokenizer) | `TokenizerStream` used in `ParserTokenizer.swift` |
+| [hakkabon/Lexer](https://github.com/hakkabon/Lexer) | `TokenStream`, `LexerTokenStream`, and `TokenizerStream` |
 
 ---
 

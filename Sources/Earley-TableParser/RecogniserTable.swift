@@ -30,60 +30,54 @@ public struct RecTableEntry {
 // MARK: - Recogniser Table  𝒯_Γ
 
 /// The pre-computed recogniser table.
-/// `table[p][x]` gives the entry for state p and symbol-name string x.
+/// `table[p][x]` gives the entry for state `p` and typed column key `x`.
 public struct RecogniserTable {
-    let entries: [[String: RecTableEntry]]   // indexed by state, keyed by symbol key
+    let entries: [[TableKey: RecTableEntry]]
     let nfa: EarleyNFA
     /// The grammar start symbol. Acceptance must not infer this from G₀,
     /// whose entailment closure normally contains slots for several goals.
     public let start: NonTerminal
 
-    /// Every grammar terminal that isn't `.string` — i.e. a `.regularExpression`,
-    /// `.characterRange`, or `.stringList` terminal, ordinarily one resolved
-    /// from a `lexical { }` declaration — paired with the same `terminalKey(_:)`
-    /// string its table entries are actually stored under.
-    ///
-    /// `terminalKey(_:)` on a pattern terminal returns the *pattern's own*
-    /// text (a regex's source via `.description`, a range's bounds, ...), not
-    /// anything a concrete input token could ever equal — so `entries[p][tok]`
-    /// can never find those columns by a direct string lookup, no matter what
-    /// the token actually is. `resolveKey(forToken:)` is the bridge.
-    let patternTerminals: [(terminal: Terminal, key: String)]
+    private let keyResolver: TableKeyResolver
+
+    init(
+        entries: [[TableKey: RecTableEntry]],
+        nfa: EarleyNFA,
+        start: NonTerminal,
+        keyResolver: TableKeyResolver
+    ) {
+        self.entries = entries
+        self.nfa = nfa
+        self.start = start
+        self.keyResolver = keyResolver
+    }
 
     public var stateCount: Int { entries.count }
 
-    /// Look up entry for state p and symbol key x.
-    public func entry(state p: Int, symbol x: String) -> RecTableEntry? {
-        guard p < entries.count else { return nil }
+    /// Looks up the entry for state `p` and typed column key `x`.
+    public func entry(state p: Int, symbol x: TableKey) -> RecTableEntry? {
+        guard entries.indices.contains(p) else { return nil }
         return entries[p][x]
     }
 
     /// The completed nonterminals at state p with lookahead x.
-    public func completers(state p: Int, symbol x: String) -> Set<NonTerminal> {
+    public func completers(state p: Int, symbol x: TableKey) -> Set<NonTerminal> {
         entry(state: p, symbol: x)?.completedNTs ?? []
     }
 
     /// Next state from p on symbol key x (nil = ⊥).
-    public func nextState(from p: Int, symbol x: String) -> Int? {
+    public func nextState(from p: Int, symbol x: TableKey) -> Int? {
         entry(state: p, symbol: x)?.nextState
     }
 
-    /// Resolves a raw input token's own literal text to the key its matching
-    /// table column is actually stored under.
+    /// Resolves a concrete input token to its typed terminal column.
     ///
     /// For an ordinary `.string` grammar terminal this is a no-op (the token's
-    /// own text already is the column key). For a `.regularExpression`/
-    /// `.characterRange`/`.stringList` grammar terminal, this checks `token`
-    /// against each pattern with `Terminal.matches(_:)` (the asymmetric
-    /// pattern-vs-lexeme check — see `Terminal.matches(_:)` in the Grammar
-    /// package) and, on a match, returns that pattern's own key instead.
-    /// Falls back to `token` unchanged when nothing matches, so a genuinely
-    /// invalid token still correctly misses every column.
-    public func resolveKey(forToken token: String) -> String {
-        for (terminal, key) in patternTerminals where terminal.matches(.string(string: token)) {
-            return key
-        }
-        return token
+    /// Exact literal terminals are preferred over regex/range/list patterns.
+    /// An unmatched token still produces a terminal key, which simply misses
+    /// every table column.
+    public func key(forToken token: String) -> TableKey {
+        keyResolver.key(forToken: token)
     }
 }
 
@@ -93,7 +87,7 @@ public func buildRecogniserTable(nfa: EarleyNFA, grammar: Grammar) -> Recogniser
     let follow = grammar.followSets()   // [NonTerminal: Set<Symbol>]
     let epsilonSym: Symbol = .terminal(.meta(.eps))
 
-    var entries = [[String: RecTableEntry]](repeating: [:], count: nfa.stateCount)
+    var entries = [[TableKey: RecTableEntry]](repeating: [:], count: nfa.stateCount)
 
     for p in 0..<nfa.stateCount {
         let gp = nfa.states[p]
@@ -103,7 +97,7 @@ public func buildRecogniserTable(nfa: EarleyNFA, grammar: Grammar) -> Recogniser
             + [.terminal(.meta(.eof))]   // "$" / end-of-input
 
         for sym in terminalSymbols {
-            let key = symbolKey(sym)
+            guard let key = TableKey(symbol: sym) else { continue }
             let next = nfa.transition(from: p, on: sym)
 
             // A_{p,x} = { Y | Y ::= γ· ∈ G_p  and  sym ∈ FOLLOW(Y) }
@@ -120,7 +114,7 @@ public func buildRecogniserTable(nfa: EarleyNFA, grammar: Grammar) -> Recogniser
         // ── Nonterminal columns ──
         for nt in grammar.nonTerminals {
             let sym = Symbol.nonTerminal(nt)
-            let key = symbolKey(sym)
+            let key = TableKey.nonTerminal(nt)
             let next = nfa.transition(from: p, on: sym)
             // Completer sets are only indexed by terminals in recET().
             entries[p][key] = RecTableEntry(nextState: next, completedNTs: [])
@@ -128,14 +122,14 @@ public func buildRecogniserTable(nfa: EarleyNFA, grammar: Grammar) -> Recogniser
 
         // ── ε column ──
         let epsNext = nfa.transition(from: p, on: epsilonSym)
-        entries[p][epsilonKey] = RecTableEntry(nextState: epsNext, completedNTs: [])
+        entries[p][.epsilon] = RecTableEntry(nextState: epsNext, completedNTs: [])
     }
 
     return RecogniserTable(
         entries: entries,
         nfa: nfa,
         start: grammar.start,
-        patternTerminals: collectPatternTerminals(for: grammar))
+        keyResolver: TableKeyResolver(grammar: grammar))
 }
 
 // MARK: - recET() Recogniser
@@ -152,21 +146,17 @@ public func recET(table: RecogniserTable, input tokens: [String]) -> Bool {
 
     // a(j) = tokens[j-1] for j in 1…n;  a(n+1) = "$"
     //
-    // Resolved via table.resolveKey(forToken:) rather than returned raw: a
-    // token's own literal text (e.g. "42") only equals a table column key
-    // directly for plain .string grammar terminals. A .regularExpression/
-    // .characterRange/.stringList terminal's column is keyed by the
-    // *pattern's* own text, so matching those requires this indirection —
-    // see RecogniserTable.resolveKey(forToken:).
-    func a(_ j: Int) -> String {
-        j >= 1 && j <= n ? table.resolveKey(forToken: tokens[j - 1]) : eofKey
+    // Concrete token text is resolved to its literal or pattern-terminal
+    // column. The synthetic position after the input uses a distinct EOF key.
+    func a(_ j: Int) -> TableKey {
+        j >= 1 && j <= n ? table.key(forToken: tokens[j - 1]) : .endOfInput
     }
 
     var E = [Set<EarleyPair>](repeating: [], count: n + 1)
     var R = [[EarleyPair]](repeating: [], count: n + 1)
 
     /// ADD: transition from state p on symbol key x with back-index i, targeting E[j].
-    func add(state p: Int, symbol x: String, backIndex i: Int, position j: Int) {
+    func add(state p: Int, symbol x: TableKey, backIndex i: Int, position j: Int) {
         guard let entry = table.entry(state: p, symbol: x),
               let h = entry.nextState else { return }
         let pair = EarleyPair(state: h, backIndex: i)
@@ -183,19 +173,19 @@ public func recET(table: RecogniserTable, input tokens: [String]) -> Bool {
         while !R[j].isEmpty {
             let (p, k) = R[j].removeLast().asTuple
 
-            // (i) Completer: k ≠ j — look up completed nonterminals and propagate.
-            if k != j {
-                let nextTok = a(j + 1)
-                for nt in table.completers(state: p, symbol: nextTok) {
-                    let ntKey = nonTerminalKey(nt)
-                    for (h, i) in E[k].map(\.asTuple) {
-                        add(state: h, symbol: ntKey, backIndex: i, position: j)
-                    }
+            // (i) Completer: look up completed nonterminals and propagate.
+            // Zero-width completions (k == j) are required for nullable rules.
+            let nextTok = a(j + 1)
+            for nt in table.completers(state: p, symbol: nextTok) {
+                let ntKey = TableKey.nonTerminal(nt)
+                for (h, i) in E[k].map(\.asTuple) {
+                    add(state: h, symbol: ntKey, backIndex: i, position: j)
                 }
             }
 
-            // (ii) ε-transition: ADD(p, ε, j, j)
-            add(state: p, symbol: epsilonKey, backIndex: j, position: j)
+            // (ii) ε-transition: enter the called-only state at the current
+            // input position.
+            add(state: p, symbol: .epsilon, backIndex: j, position: j)
 
             // (iii) Scanner: if j < n, ADD(p, a_{j+1}, k, j+1)
             if j < n {
@@ -221,45 +211,3 @@ public struct EarleyPair: Hashable {
     public let backIndex: Int
     var asTuple: (Int, Int) { (state, backIndex) }
 }
-
-// MARK: - Symbol key helpers
-
-/// The string key used as the dictionary index for a Symbol in the tables.
-/// Terminals are keyed by their string description; nonterminals by their name.
-func symbolKey(_ sym: Symbol) -> String {
-    switch sym {
-    case .terminal(let t):    return terminalKey(t)
-    case .nonTerminal(let nt): return nonTerminalKey(nt)
-    case .metaSymbol(let ms): return ms.rawValue
-    }
-}
-
-func terminalKey(_ t: Terminal) -> String {
-    switch t {
-    case .string(let s): return s
-    case .meta(let m):   return m.rawValue
-    default:             return t.description
-    }
-}
-
-func nonTerminalKey(_ nt: NonTerminal) -> String { nt.name }
-
-/// Every grammar terminal that isn't `.string` (i.e. resolved from a
-/// `lexical { }` regex/range/list declaration), paired with its `terminalKey(_:)`
-/// string — shared by `RecogniserTable` and `SLParseTable`'s `resolveKey(forToken:)`.
-/// See `RecogniserTable.patternTerminals`'s doc comment for why this exists.
-func collectPatternTerminals(for grammar: Grammar) -> [(terminal: Terminal, key: String)] {
-    grammar.terminals.compactMap { terminal in
-        switch terminal {
-        case .string, .meta: return nil
-        case .characterRange, .stringList, .regularExpression:
-            return (terminal, terminalKey(terminal))
-        }
-    }
-}
-
-/// The dictionary key for the epsilon column.
-let epsilonKey: String = MetaTerminal.eps.rawValue   // "ε"
-
-/// The dictionary key for the end-of-input sentinel.
-let eofKey: String = MetaTerminal.eof.rawValue        // "$"

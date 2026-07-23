@@ -45,8 +45,8 @@ public struct ELTableEntry {
 
 /// The additional per-state data needed by parseET().
 public struct ELStateInfo {
-    /// SELECT(p): terminal keys for which an action is valid from state p.
-    public let selectSet: Set<String>
+    /// SELECT(p): terminal or EOF columns for which an action is valid.
+    public let selectSet: Set<TableKey>
     /// rLHS(p): nonterminals that are the goal of a complete item in G_p.
     public let rLHS: Set<NonTerminal>
 }
@@ -54,22 +54,15 @@ public struct ELStateInfo {
 // MARK: - EL Parse Table
 
 public struct ELParseTable {
-    let entries:   [[String: ELTableEntry]]   // [stateIndex][symbolKey]
-    let stateInfo: [ELStateInfo]              // [stateIndex]
+    let entries:   [[TableKey: ELTableEntry]]
+    let stateInfo: [ELStateInfo]
     public let nfa: EarleyNFA
     public let grammar: Grammar
 
-    /// Pattern terminals for resolveKey(forToken:) — same purpose as in SLParseTable.
-    let patternTerminals: [(terminal: Terminal, key: String)]
-
-    /// staticNullables[state] — see `staticNullableLabels(in:grammar:)` in
-    /// SLParseTable.swift. Seeded eagerly by `parseET` whenever a state is
-    /// discovered reachable at some input position; fixes the same missing-
-    /// BSR-entry gap for closure-time nullable absorption as in the SL table.
-    let staticNullables: [Set<NodeLabel>]
+    private let keyResolver: TableKeyResolver
 
     public init(
-        entries:    [[String: ELTableEntry]],
+        entries:    [[TableKey: ELTableEntry]],
         stateInfo:  [ELStateInfo],
         nfa:        EarleyNFA,
         grammar:    Grammar
@@ -78,12 +71,12 @@ public struct ELParseTable {
         self.stateInfo        = stateInfo
         self.nfa              = nfa
         self.grammar          = grammar
-        self.patternTerminals = collectPatternTerminals(for: grammar)
-        self.staticNullables  = nfa.states.map { staticNullableLabels(in: $0, grammar: grammar) }
+        self.keyResolver      = TableKeyResolver(grammar: grammar)
     }
 
-    public func entry(state p: Int, symbol x: String) -> ELTableEntry? {
-        guard p < entries.count else { return nil }
+    /// Looks up the entry for state `p` and typed column key `x`.
+    public func entry(state p: Int, symbol x: TableKey) -> ELTableEntry? {
+        guard entries.indices.contains(p) else { return nil }
         return entries[p][x]
     }
 
@@ -92,20 +85,9 @@ public struct ELParseTable {
         return stateInfo[p]
     }
 
-    /// The static nullable-prefix labels implied by state `p` alone — see
-    /// `staticNullableLabels(in:grammar:)`.
-    func staticNullableEntries(state p: Int) -> Set<NodeLabel> {
-        guard p < staticNullables.count else { return [] }
-        return staticNullables[p]
-    }
-
-    /// Bridges a raw input token to the key its matching column is stored under.
-    /// Identical contract to SLParseTable.resolveKey(forToken:).
-    public func resolveKey(forToken token: String) -> String {
-        for (terminal, key) in patternTerminals where terminal.matches(.string(string: token)) {
-            return key
-        }
-        return token
+    /// Resolves a concrete input token to its typed literal or pattern column.
+    public func key(forToken token: String) -> TableKey {
+        keyResolver.key(forToken: token)
     }
 }
 
@@ -120,7 +102,7 @@ public func buildELParseTable(nfa: EarleyNFA, grammar: Grammar) -> ELParseTable 
 
     for p in 0..<nfa.stateCount {
         let gp = nfa.states[p]
-        var sel  = Set<String>()
+        var sel  = Set<TableKey>()
         var rlhs = Set<NonTerminal>()
 
         for slot in gp {
@@ -129,7 +111,9 @@ public func buildELParseTable(nfa: EarleyNFA, grammar: Grammar) -> ELParseTable 
                 rlhs.insert(slot.production.goal)
                 // FOLLOW(Y) feeds into SELECT (completer case).
                 for sym in follow[slot.production.goal] ?? [] {
-                    sel.insert(terminalKeyFromSymbol(sym))
+                    if let key = terminalTableKey(from: sym) {
+                        sel.insert(key)
+                    }
                 }
             } else {
                 // Partial item: FIRST of the remaining suffix feeds into SELECT.
@@ -137,19 +121,18 @@ public func buildELParseTable(nfa: EarleyNFA, grammar: Grammar) -> ELParseTable 
                                                goal: slot.production.goal))
             }
         }
-        sel.remove("")   // remove any empty-string artefacts
         stateInfos[p] = ELStateInfo(selectSet: sel, rLHS: rlhs)
     }
 
     // ── Step 2: Build per-(state, symbol) EL table entries ────────────────
-    var entries = [[String: ELTableEntry]](repeating: [:], count: nfa.stateCount)
+    var entries = [[TableKey: ELTableEntry]](repeating: [:], count: nfa.stateCount)
 
     for p in 0..<nfa.stateCount {
         let gp = nfa.states[p]
 
         // Terminal columns (+ end-of-input $).
         for sym in grammar.terminals.map({ Symbol.terminal($0) }) + [Symbol.terminal(.meta(.eof))] {
-            let key  = symbolKey(sym)
+            guard let key = TableKey(symbol: sym) else { continue }
             let next = nfa.transition(from: p, on: sym)
             let chi1 = mSets(gp, symbol: sym)
             let chi2: Set<NodeLabel> = next.map { eSets(nfa.states[$0], grammar: grammar) } ?? []
@@ -159,7 +142,7 @@ public func buildELParseTable(nfa: EarleyNFA, grammar: Grammar) -> ELParseTable 
         // Nonterminal columns.
         for nt in grammar.nonTerminals {
             let sym  = Symbol.nonTerminal(nt)
-            let key  = symbolKey(sym)
+            let key  = TableKey.nonTerminal(nt)
             let next = nfa.transition(from: p, on: sym)
             let chi1 = mSets(gp, symbol: sym)
             let chi2: Set<NodeLabel> = next.map { eSets(nfa.states[$0], grammar: grammar) } ?? []
@@ -168,7 +151,7 @@ public func buildELParseTable(nfa: EarleyNFA, grammar: Grammar) -> ELParseTable 
 
         // ε column.
         let epsNext = nfa.transition(from: p, on: epsilonSym)
-        entries[p][epsilonKey] = ELTableEntry(nextState: epsNext, chi1: [], chi2: [])
+        entries[p][.epsilon] = ELTableEntry(nextState: epsNext, chi1: [], chi2: [])
     }
 
     return ELParseTable(entries: entries, stateInfo: stateInfos, nfa: nfa, grammar: grammar)
@@ -179,35 +162,22 @@ public func buildELParseTable(nfa: EarleyNFA, grammar: Grammar) -> ELParseTable 
 /// The extended-lookahead Earley Table Traversing Parser (Section 7.3).
 ///
 /// Key differences from simpleET():
-///   (i)  Completer fires for each Y ∈ rLHS(p), guarded by a_{j+1} ∈ SELECT(p).
+///   (i)  Completer fires for each Y ∈ rLHS(p), guarded by a_{j+1} ∈ SELECT(p),
+///        including zero-width nullable completions.
 ///   (ii) Scanner fires only when a_{j+1} ∈ SELECT(p).
 func parseET(table: ELParseTable, input tokens: [String]) -> TableTraversalResult {
     let n = tokens.count
 
-    func a(_ j: Int) -> String {
-        j >= 1 && j <= n ? table.resolveKey(forToken: tokens[j - 1]) : eofKey
+    func a(_ j: Int) -> TableKey {
+        j >= 1 && j <= n ? table.key(forToken: tokens[j - 1]) : .endOfInput
     }
 
     var E = [Set<EarleyPair>](repeating: [], count: n + 1)
     var R = [[EarleyPair]](repeating: [], count: n + 1)
     var Upsilon = Set<BSR<NodeLabel>>()
-    // See simpleET()'s identical mechanism for the full rationale: `lnCallSlots`
-    // can fold multi-symbol nullable-prefix absorption into a state's closure
-    // without ever crossing a transition, so chi1/chi2 (which only fire on
-    // actual transitions) never produce the BSR entries those dot positions
-    // need. Seeded per (state, position) since the same state can be reached
-    // at several distinct input positions over one parse.
-    var staticSeeded = Set<EarleyPair>()
-
-    func seedStaticNullables(state: Int, position: Int) {
-        guard staticSeeded.insert(EarleyPair(state: state, backIndex: position)).inserted else { return }
-        for label in table.staticNullableEntries(state: state) {
-            Upsilon.insert(BSR(label: label, leftExtent: position, pivot: position, rightExtent: position))
-        }
-    }
 
     @discardableResult
-    func add(state p: Int, symbol x: String, backIndex i: Int, pivot k: Int, position j: Int) -> Bool {
+    func add(state p: Int, symbol x: TableKey, backIndex i: Int, pivot k: Int, position j: Int) -> Bool {
         guard let entry = table.entry(state: p, symbol: x) else { return false }
         for label in entry.chi1 {
             Upsilon.insert(BSR(label: label, leftExtent: i, pivot: k, rightExtent: j))
@@ -219,7 +189,6 @@ func parseET(table: ELParseTable, input tokens: [String]) -> TableTraversalResul
         let pair = EarleyPair(state: h, backIndex: i)
         if E[j].insert(pair).inserted {
             R[j].append(pair)
-            seedStaticNullables(state: h, position: j)
             return true
         }
         return false
@@ -228,7 +197,6 @@ func parseET(table: ELParseTable, input tokens: [String]) -> TableTraversalResul
     // Initialise 𝔼₀ = R₀ = { (0, 0) }
     E[0].insert(EarleyPair(state: 0, backIndex: 0))
     R[0].append(EarleyPair(state: 0, backIndex: 0))
-    seedStaticNullables(state: 0, position: 0)
 
     for j in 0...n {
         while !R[j].isEmpty {
@@ -236,19 +204,20 @@ func parseET(table: ELParseTable, input tokens: [String]) -> TableTraversalResul
             guard let info = table.info(state: p) else { continue }
             let nextTok = a(j + 1)
 
-            // (i) EL Completer: k ≠ j, a_{j+1} ∈ SELECT(p).
+            // (i) EL Completer: a_{j+1} ∈ SELECT(p), including k == j
+            //     for zero-width nullable completions.
             //     Fire for every Y ∈ rLHS(p), not just FOLLOW-filtered A_{p,x}.
-            if k != j && info.selectSet.contains(nextTok) {
+            if info.selectSet.contains(nextTok) {
                 for nt in info.rLHS {
-                    let ntKey = nonTerminalKey(nt)
+                    let ntKey = TableKey.nonTerminal(nt)
                     for (h, i) in E[k].map(\.asTuple) {
                         add(state: h, symbol: ntKey, backIndex: i, pivot: k, position: j)
                     }
                 }
             }
 
-            // (ii) ε-transition (always).
-            add(state: p, symbol: epsilonKey, backIndex: j, pivot: j, position: j)
+            // (ii) ε-transition (always): enter called-only state.
+            add(state: p, symbol: .epsilon, backIndex: j, pivot: j, position: j)
 
             // (iii) Scanner: only when a_{j+1} ∈ SELECT(p).
             if j < n && info.selectSet.contains(nextTok) {
@@ -268,30 +237,29 @@ func parseET(table: ELParseTable, input tokens: [String]) -> TableTraversalResul
 
 // MARK: - Helpers for SELECT computation
 
-/// Convert any grammar Symbol to the terminal key string used in table columns.
-private func terminalKeyFromSymbol(_ sym: Symbol) -> String {
-    switch sym {
-    case .terminal(let t):     return t.isEmpty ? eofKey : terminalKey(t)
-    case .nonTerminal, .metaSymbol: return ""
-    }
+/// Converts a terminal grammar symbol to its canonical table column.
+private func terminalTableKey(from symbol: Symbol) -> TableKey? {
+    guard case .terminal = symbol else { return nil }
+    return TableKey(symbol: symbol)
 }
 
-/// FIRST terminal keys of a symbol sequence (stops at first non-nullable symbol).
+/// FIRST terminal columns of a symbol sequence (stops at the first
+/// non-nullable symbol).
 /// If the entire sequence is nullable, also adds FOLLOW(goal).
 private func firstTerminalKeys(
     of syms: [Symbol],
     grammar: Grammar,
     follow: [NonTerminal: Set<Symbol>],
     goal: NonTerminal
-) -> Set<String> {
-    var result = Set<String>()
+) -> Set<TableKey> {
+    var result = Set<TableKey>()
     var allNullable = true
     var visited: Set<NonTerminal> = Set()
 
     for sym in syms {
         switch sym {
         case .terminal(let t):
-            if !t.isEmpty { result.insert(terminalKey(t)) }
+            if !t.isEmpty { result.insert(tableKey(for: t)) }
             allNullable = false
         case .nonTerminal(let nt):
             // Add all terminals that can start a derivation of nt.
@@ -305,21 +273,27 @@ private func firstTerminalKeys(
 
     if allNullable {
         for sym in follow[goal] ?? [] {
-            result.insert(terminalKeyFromSymbol(sym))
+            if let key = terminalTableKey(from: sym) {
+                result.insert(key)
+            }
         }
     }
     return result
 }
 
 /// Iterative FIRST terminals of a nonterminal (cycle-safe).
-private func firstOfNT(_ nt: NonTerminal, grammar: Grammar, visited: inout Set<NonTerminal>) -> Set<String> {
+private func firstOfNT(
+    _ nt: NonTerminal,
+    grammar: Grammar,
+    visited: inout Set<NonTerminal>
+) -> Set<TableKey> {
     guard visited.insert(nt).inserted else { return [] }
-    var result = Set<String>()
+    var result = Set<TableKey>()
     for prod in grammar.productions where prod.goal == nt {
         for sym in prod.rule {
             switch sym {
             case .terminal(let t):
-                if !t.isEmpty { result.insert(terminalKey(t)) }
+                if !t.isEmpty { result.insert(tableKey(for: t)) }
                 break   // stop at first non-nullable
             case .nonTerminal(let inner):
                 result.formUnion(firstOfNT(inner, grammar: grammar, visited: &visited))

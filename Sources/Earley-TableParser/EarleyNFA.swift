@@ -4,11 +4,11 @@
 //
 // The key ideas:
 //   calls(M)   = smallest set of slots that includes all "left-null-call" slots
-//                reachable from M via nonterminal calls and nullable transitions.
-//   move(M, x) = the set of slots reached by matching symbol x from M,
-//                closing over nullable nonterminals.
+//                reachable from M via nonterminal calls.
+//   move(M, x) = core slots reached by matching x; the explicit ε edge enters
+//                called-only states so that origins are not conflated.
 //
-// NFA states are entailment-closed sets of slots.
+// NFA states alternate between core move sets and called-only sets.
 // States are indexed G₀, G₁, … G_q once enumerated.
 //
 // Grammar library API used:
@@ -64,10 +64,10 @@ func calls(_ M: Set<Slot>, grammar: Grammar) -> Set<Slot> {
 /// Compute move(M, x): slots reachable by consuming symbol x from state M.
 ///
 ///   move(M, x) for x ≠ ε:
-///     = calls({ X ::= αx·β | (X ::= α·xβ) ∈ M })
+///     = { X ::= αx·β | (X ::= α·xβ) ∈ M }
 ///
 ///   move(M, ε):
-///     = calls(M)  if M is core (non-empty, no dot-at-zero slot)
+///     = calls(M) ∖ M  if M is core (non-empty, no dot-at-zero slot)
 ///     = ∅         otherwise
 ///
 /// (Scott & Johnstone 2026, Section 4.2)
@@ -75,7 +75,10 @@ func move(_ M: Set<Slot>, symbol x: Symbol, grammar: Grammar) -> Set<Slot> {
     // ε-transition
     if isEpsilonSymbol(x) {
         let isCore = !M.isEmpty && !M.contains(where: { $0.dot == 0 })
-        return isCore ? calls(M, grammar: grammar) : []
+        // Keep kernel and called items in distinct NFA states: their Earley
+        // pairs carry different origins.  Nullable calls are completed by the
+        // normal completer, including when their span is zero-width.
+        return isCore ? calls(M, grammar: grammar).subtracting(M) : []
     }
 
     // Ordinary symbol: advance all slots whose next-symbol matches x.
@@ -84,15 +87,19 @@ func move(_ M: Set<Slot>, symbol x: Symbol, grammar: Grammar) -> Set<Slot> {
         guard let next = slot.nextSymbol, next == x else { continue }
         advanced.insert(slot.advanced())
     }
-    guard !advanced.isEmpty else { return [] }
-
-    return calls(advanced, grammar: grammar)
+    // Do not close an ordinary transition under `calls` here.  The explicit
+    // ε-transition below is what changes a core state into its call-closed
+    // state, and recET/simpleET assign that transition the current input
+    // position as its back index.  Folding the closure into this transition
+    // mixes kernel items (whose origin must be preserved) with newly called
+    // items (whose origin is the current position) in one Earley pair.
+    return advanced
 }
 
 // MARK: - EarleyNFA
 
 /// The Earley NFA: an indexed collection of states G₀ … G_q.
-/// Each state G_p is an entailment-closed set of grammar slots.
+/// States are either core move sets or called-only sets of grammar slots.
 public struct EarleyNFA {
     /// All NFA states in BFS-enumeration order (G₀ is index 0).
     public let states: [Set<Slot>]
@@ -157,14 +164,16 @@ extension Grammar {
 
 // MARK: - NFA Builder
 
-/// Build the Earley NFA for a grammar using BFS from G₀ = calls(S_LNcall).
+/// Build the Earley NFA for a grammar using BFS from the call closure of the
+/// start productions' dot-zero slots.
 ///
 /// (Scott & Johnstone 2026, Section 4.3)
 public func buildEarleyNFA(grammar: Grammar) -> EarleyNFA {
-    // G₀ starts with every left-null-call slot of the start symbol, not
-    // merely its dot-zero slots. Otherwise a nullable prefix such as A in
-    // S ::= A S b can never be skipped at input position zero.
-    let startSlots = Set(grammar.lnCallSlots(for: grammar.start))
+    let startSlots = Set(
+        grammar.productions
+            .filter { $0.goal == grammar.start }
+            .map { Slot(production: $0, dot: 0) }
+    )
     let g0 = calls(startSlots, grammar: grammar)
 
     var allStates: [Set<Slot>] = [g0]

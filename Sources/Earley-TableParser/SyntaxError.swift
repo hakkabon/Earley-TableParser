@@ -49,20 +49,17 @@ public struct SyntaxError: Error {
     ///
     /// The first line of the input string is line 0.
     public var line: Int {
-        if string.count == 0 {
-            return 0
-        }
-        return string[...range.lowerBound].filter { (char: Character) in
-            char.isNewline
-        }.count
+        string[..<range.lowerBound].filter(\.isNewline).count
     }
     
     public var column: Int {
-        if string.count == 0 {
-            return 0
+        let prefix = string[..<range.lowerBound]
+        guard let newline = prefix.lastIndex(where: \.isNewline) else {
+            return string.distance(from: string.startIndex, to: range.lowerBound)
         }
-        let lastNewlineIndex = string[...range.lowerBound].lastIndex(where: {$0.isNewline}) ?? string.startIndex
-        return string.distance(from: lastNewlineIndex, to: range.lowerBound)
+        return string.distance(
+            from: string.index(after: newline),
+            to: range.lowerBound)
     }
     
     /// Creates a new syntax error with a given range and reason
@@ -105,4 +102,3 @@ extension SyntaxError.Reason: CustomStringConvertible {
         }
     }
 }
-
