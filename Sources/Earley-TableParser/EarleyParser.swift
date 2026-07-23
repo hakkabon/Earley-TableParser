@@ -100,22 +100,6 @@ func simpleET(table: SLParseTable, input tokens: [String]) -> TableTraversalResu
     var E = [Set<EarleyPair>](repeating: [], count: n + 1)
     var R = [[EarleyPair]](repeating: [], count: n + 1)
     var Upsilon = Set<BSR<NodeLabel>>()
-    // Keyed by (state, position): the SAME state can be discovered reachable
-    // at several DISTINCT input positions over the course of one parse (e.g.
-    // via different call sites), and each occurrence needs its own seeding —
-    // the zero-width BSR elements below are position-dependent.
-    var staticSeeded = Set<EarleyPair>()
-
-    /// See `staticNullableLabels(in:grammar:)`: whenever state `state` becomes
-    /// reachable at input position `position`, eagerly record the zero-width
-    /// BSR elements its own closure implies — these never arise from `add()`'s
-    /// chi1/chi2 handling because no transition is ever crossed to produce them.
-    func seedStaticNullables(state: Int, position: Int) {
-        guard staticSeeded.insert(EarleyPair(state: state, backIndex: position)).inserted else { return }
-        for label in table.staticNullableEntries(state: state) {
-            Upsilon.insert(BSR(label: label, leftExtent: position, pivot: position, rightExtent: position))
-        }
-    }
 
     @discardableResult
     func add(state p: Int, symbol x: TableKey, backIndex i: Int, pivot k: Int, position j: Int) -> Bool {
@@ -130,7 +114,6 @@ func simpleET(table: SLParseTable, input tokens: [String]) -> TableTraversalResu
         let pair = EarleyPair(state: h, backIndex: i)
         if E[j].insert(pair).inserted {
             R[j].append(pair)
-            seedStaticNullables(state: h, position: j)
             return true
         }
         return false
@@ -138,7 +121,6 @@ func simpleET(table: SLParseTable, input tokens: [String]) -> TableTraversalResu
 
     E[0].insert(EarleyPair(state: 0, backIndex: 0))
     R[0].append(EarleyPair(state: 0, backIndex: 0))
-    seedStaticNullables(state: 0, position: 0)
 
     for j in 0...n {
         while !R[j].isEmpty {
@@ -188,12 +170,6 @@ public func buildSPPF(
         $0.label.isCompleted && $0.label.goal == grammar.start &&
         $0.leftExtent == 0 && $0.rightExtent == n
     }
-    // NOTE: with `staticNullableLabels` seeding Upsilon directly (see
-    // SLParseTable.swift / ELParseTable.swift / simpleET() / parseET()), a
-    // literal `start ::= ε` production is now itself present in `bsrSet` as
-    // `(NodeLabel(start,[],0), 0, 0, 0)`, which already makes `hasRoot` true
-    // for n == 0. This explicit `hasEmptyRoot` check is therefore redundant
-    // in the common case, but it's left in place as a harmless extra guard.
     let hasEmptyRoot = n == 0 && grammar.productions.contains {
         $0.goal == grammar.start && $0.rule.isEmpty
     }
@@ -214,17 +190,6 @@ public func buildSPPF(
                 makePackedNode(entry.label, left: left, pivot: entry.pivot, right: right,
                                parent: node, graph: graph, grammar: grammar)
             }
-            // NOTE: with `staticNullableLabels` now eagerly seeding
-            // `NodeLabel(goal,[],0)` into `bsrSet` for every literal `X ::= ε`
-            // production the moment X is called (see SLParseTable.swift's
-            // `staticNullableLabels(in:grammar:)` for the full rationale),
-            // the primary loop above already finds and handles these entries
-            // on its own. This explicit fallback is therefore redundant in
-            // the common case, but it's left in place as a harmless extra
-            // guard for any epsilon production the eager-seeding mechanism
-            // doesn't reach (e.g. a nonterminal that is never itself the
-            // target of `calls()` from any reachable state, if such a case
-            // exists in a given grammar).
             if left == right {
                 for production in grammar.productions where
                     production.goal.name == name && production.rule.isEmpty {
