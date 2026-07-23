@@ -1,4 +1,4 @@
-// ParseTable.swift
+// SLParseTable.swift
 // Defines the Binary Subtree Representation (BSR) elements and builds the
 // SL parse table  𝒯_Γ^SL  used by simpleET() in Section 7.1.
 //
@@ -96,6 +96,65 @@ func eSets(_ M: Set<Slot>, grammar: Grammar) -> Set<NodeLabel> {
     return result
 }
 
+// MARK: - Static nullable-prefix labels (closure-time absorption)
+//
+// BUG FIX (see EarleyParser.swift's simpleET() for the full rationale):
+//
+// `lnCallSlots(for:)` can add a slot `X ::= α · ω β` (dot > 0) to a state's
+// closure purely because the *prefix* α is nullable — no NFA transition is
+// ever crossed to reach that dot position; it is baked into the state the
+// moment X is "called" via `calls()`. This happens whenever a production has
+// two or more *consecutive* nullable symbols (e.g. Γ₂'s `S ::= B B S a`,
+// where both `B`s can be absorbed with zero input consumed) or is a literal
+// `X ::= ε` production.
+//
+// Both `mSets` and `eSets` only ever run on states that are the *target* of
+// an actual NFA transition (`nfa.transition(from:on:)`). A state that is
+// itself the *initial* state (or, more generally, any state whose relevant
+// slots arrived purely via `calls()` and were never the destination of a
+// move on a real symbol) is therefore never fed to either function — so the
+// `NodeLabel`s for those in-between dot positions are simply never created,
+// and `buildSPPF` finds nothing when it later looks them up. The result is a
+// dead-end `.intermediate`/`.symbol` node that `SPPFGraph.cleanup()` quietly
+// prunes — taking its ancestor chain, and sometimes the whole parse tree,
+// with it. This is the root cause of "SPPF only partially constructed" for
+// any grammar with adjacent nullable symbols.
+//
+// The fix: precompute, for every NFA state, the full set of `NodeLabel`s
+// implied by *just being in that state* — independent of any transition —
+// and seed them into Υ eagerly whenever the traversal (`simpleET`/`parseET`)
+// discovers the state is reachable at some input position j. Since these
+// labels always describe a zero-width span (nothing was consumed to reach
+// them), the seeded BSR element is always `(label, j, j, j)`.
+
+/// For an NFA state (a set of grammar slots), the `NodeLabel`s describing
+/// every nullable-prefix dot position that `calls()` folded into the state
+/// without crossing a transition — for every nonterminal the state calls.
+///
+/// Includes both:
+///   • partial slots (`dot >= 1`, prefix nullable but the production isn't
+///     fully done) — e.g. `S ::= B·BSa`, `S ::= BB·Sa`
+///   • the trivially-complete case (`dot == 0 == rule.count`, i.e. a literal
+///     `X ::= ε` production) — these need the exact same eager treatment for
+///     the exact same reason: no transition ever visits them either.
+///
+/// `dot == 0` slots where `rule` is non-empty are excluded: they carry no
+/// information beyond "X was called here", which the entailment closure
+/// already captures structurally.
+func staticNullableLabels(in state: Set<Slot>, grammar: Grammar) -> Set<NodeLabel> {
+    var result = Set<NodeLabel>()
+    let called = Set(state.filter { $0.dot == 0 }.map { $0.production.goal })
+    for nt in called {
+        for slot in grammar.lnCallSlots(for: nt) where slot.dot >= 1 || slot.isComplete {
+            result.insert(NodeLabel(
+                goal: slot.production.goal,
+                symbols: slot.production.rule,
+                position: slot.dot))
+        }
+    }
+    return result
+}
+
 // MARK: - SL Parse Table Entry
 
 public struct SLTableEntry {
@@ -122,16 +181,29 @@ public struct SLParseTable {
     /// threaded in separately.
     let patternTerminals: [(terminal: Terminal, key: String)]
 
+    /// staticNullables[state] — see `staticNullableLabels(in:grammar:)` above.
+    /// Indexed by NFA state; seeded eagerly by `simpleET`/`parseET` whenever a
+    /// state is discovered reachable at some input position.
+    let staticNullables: [Set<NodeLabel>]
+
     public init(entries: [[String: SLTableEntry]], nfa: EarleyNFA, grammar: Grammar) {
         self.entries = entries
         self.nfa = nfa
         self.grammar = grammar
         self.patternTerminals = collectPatternTerminals(for: grammar)
+        self.staticNullables = nfa.states.map { staticNullableLabels(in: $0, grammar: grammar) }
     }
 
     public func entry(state p: Int, symbol x: String) -> SLTableEntry? {
         guard p < entries.count else { return nil }
         return entries[p][x]
+    }
+
+    /// The static nullable-prefix labels implied by state `p` alone — see
+    /// `staticNullableLabels(in:grammar:)`.
+    func staticNullableEntries(state p: Int) -> Set<NodeLabel> {
+        guard p < staticNullables.count else { return [] }
+        return staticNullables[p]
     }
 
     /// See `RecogniserTable.resolveKey(forToken:)`'s doc comment — identical

@@ -62,6 +62,12 @@ public struct ELParseTable {
     /// Pattern terminals for resolveKey(forToken:) — same purpose as in SLParseTable.
     let patternTerminals: [(terminal: Terminal, key: String)]
 
+    /// staticNullables[state] — see `staticNullableLabels(in:grammar:)` in
+    /// SLParseTable.swift. Seeded eagerly by `parseET` whenever a state is
+    /// discovered reachable at some input position; fixes the same missing-
+    /// BSR-entry gap for closure-time nullable absorption as in the SL table.
+    let staticNullables: [Set<NodeLabel>]
+
     public init(
         entries:    [[String: ELTableEntry]],
         stateInfo:  [ELStateInfo],
@@ -73,6 +79,7 @@ public struct ELParseTable {
         self.nfa              = nfa
         self.grammar          = grammar
         self.patternTerminals = collectPatternTerminals(for: grammar)
+        self.staticNullables  = nfa.states.map { staticNullableLabels(in: $0, grammar: grammar) }
     }
 
     public func entry(state p: Int, symbol x: String) -> ELTableEntry? {
@@ -83,6 +90,13 @@ public struct ELParseTable {
     public func info(state p: Int) -> ELStateInfo? {
         guard p < stateInfo.count else { return nil }
         return stateInfo[p]
+    }
+
+    /// The static nullable-prefix labels implied by state `p` alone — see
+    /// `staticNullableLabels(in:grammar:)`.
+    func staticNullableEntries(state p: Int) -> Set<NodeLabel> {
+        guard p < staticNullables.count else { return [] }
+        return staticNullables[p]
     }
 
     /// Bridges a raw input token to the key its matching column is stored under.
@@ -177,6 +191,20 @@ func parseET(table: ELParseTable, input tokens: [String]) -> TableTraversalResul
     var E = [Set<EarleyPair>](repeating: [], count: n + 1)
     var R = [[EarleyPair]](repeating: [], count: n + 1)
     var Upsilon = Set<BSR<NodeLabel>>()
+    // See simpleET()'s identical mechanism for the full rationale: `lnCallSlots`
+    // can fold multi-symbol nullable-prefix absorption into a state's closure
+    // without ever crossing a transition, so chi1/chi2 (which only fire on
+    // actual transitions) never produce the BSR entries those dot positions
+    // need. Seeded per (state, position) since the same state can be reached
+    // at several distinct input positions over one parse.
+    var staticSeeded = Set<EarleyPair>()
+
+    func seedStaticNullables(state: Int, position: Int) {
+        guard staticSeeded.insert(EarleyPair(state: state, backIndex: position)).inserted else { return }
+        for label in table.staticNullableEntries(state: state) {
+            Upsilon.insert(BSR(label: label, leftExtent: position, pivot: position, rightExtent: position))
+        }
+    }
 
     @discardableResult
     func add(state p: Int, symbol x: String, backIndex i: Int, pivot k: Int, position j: Int) -> Bool {
@@ -191,6 +219,7 @@ func parseET(table: ELParseTable, input tokens: [String]) -> TableTraversalResul
         let pair = EarleyPair(state: h, backIndex: i)
         if E[j].insert(pair).inserted {
             R[j].append(pair)
+            seedStaticNullables(state: h, position: j)
             return true
         }
         return false
@@ -199,6 +228,7 @@ func parseET(table: ELParseTable, input tokens: [String]) -> TableTraversalResul
     // Initialise 𝔼₀ = R₀ = { (0, 0) }
     E[0].insert(EarleyPair(state: 0, backIndex: 0))
     R[0].append(EarleyPair(state: 0, backIndex: 0))
+    seedStaticNullables(state: 0, position: 0)
 
     for j in 0...n {
         while !R[j].isEmpty {
