@@ -8,6 +8,11 @@ A Swift implementation of the Earley Table Traversing Parser algorithm from:
 
 Fully general: handles any context-free grammar — ambiguous, left-recursive, ε-containing — and produces a Shared Packed Parse Forest (SPPF) that encodes all derivations simultaneously.
 
+Release `0.1.0` adopts the ecosystem's compatible Grammar, Lexer, Parser,
+GrammarDiagram, and TerminalColors tags. Both SL and EL modes export the shared
+production-identified portable forest contract and build without requiring
+Apple's unified logging module.
+
 [![Swift 5.9+](https://img.shields.io/badge/Swift-5.9%2B-orange.svg)](https://swift.org)  
 [![Platforms](https://img.shields.io/badge/platforms-macOS%2011%20%7C%20iOS%2014-blue.svg)](https://developer.apple.com/swift/)  
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)  

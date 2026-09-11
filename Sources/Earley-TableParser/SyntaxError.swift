@@ -8,7 +8,6 @@
 
 import Foundation
 import Grammar
-import os.log
 
 /// A syntax error which was generated during parsing or tokenization
 public struct SyntaxError: Error {

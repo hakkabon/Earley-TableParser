@@ -1213,4 +1213,32 @@ struct EarleyTableParserFacadeTests {
         let result = try parser.parse(tokens: ["a"])
         #expect(result.isSuccessful)
     }
+
+    @Test("SL and EL export stable production-identified Catalan forests")
+    func portableContractParity() throws {
+        let expression = NT("Expression")
+        let grammar = Grammar(
+            productions: [
+                Production(goal: expression, rule: [N("Expression"), T("PLUS"), N("Expression")]),
+                Production(goal: expression, rule: [T("ID")]),
+            ],
+            start: expression, lexicalTokens: [:]
+        )
+
+        for extended in [false, true] {
+            let parser = EarleyTableParser(grammar: grammar, useExtendedLookahead: extended)
+            let result = try parser.parse(tokens: ["ID", "PLUS", "ID", "PLUS", "ID"])
+            let snapshot = try result.sppfGraph?.portableSnapshot()
+            let forest = try #require(snapshot)
+            let productionNodes = forest.nodes.filter {
+                $0.kind == .intermediate || $0.kind == .packed
+            }
+            #expect(!productionNodes.isEmpty)
+            #expect(productionNodes.allSatisfy { $0.productionID != nil })
+            #expect(forest.nodes.map(\.id) == forest.nodes.map(\.id).sorted())
+            #expect(forest.edges == forest.edges.sorted())
+            #expect(forest.isAmbiguous)
+            #expect(try parser.allSyntaxTrees(for: "ID PLUS ID PLUS ID").count == 2)
+        }
+    }
 }
