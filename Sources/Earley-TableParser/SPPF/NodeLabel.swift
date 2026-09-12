@@ -18,13 +18,19 @@ import Parser
 ///
 /// Already carries exactly what `SPPFLabel` needs — `goal`, `symbols`, and
 /// `position` — so conformance is free.
-public struct NodeLabel: Codable, SPPFLabel {
+public struct NodeLabel: Codable, ProductionIdentifiedSPPFLabel {
     /// The LHS nonterminal (head of the production).
     public let goal: NonTerminal
     /// The RHS symbols of the production this label refers to.
     public let symbols: [Symbol]
     /// The dot position: `symbols[0..<position]` have been matched.
     public let position: Int
+
+    /// Stable semantic identity shared with equivalent productions in every
+    /// other generalized engine.
+    public var productionID: GrammarProductionID {
+        GrammarProductionID(goal: goal, symbols: symbols)
+    }
 
     public init(goal: NonTerminal, symbols: [Symbol], position: Int) {
         self.goal = goal
