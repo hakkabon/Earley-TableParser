@@ -8,10 +8,10 @@ A Swift implementation of the Earley Table Traversing Parser algorithm from:
 
 Fully general: handles any context-free grammar — ambiguous, left-recursive, ε-containing — and produces a Shared Packed Parse Forest (SPPF) that encodes all derivations simultaneously.
 
-Release `0.1.0` adopts the ecosystem's compatible Grammar, Lexer, Parser,
-GrammarDiagram, and TerminalColors tags. Both SL and EL modes export the shared
-production-identified portable forest contract and build without requiring
-Apple's unified logging module.
+Release `0.2.0` stabilizes both table modes against an independent classical
+Earley oracle. Simple (SL) and extended (EL) lookahead export the same shared,
+production-identified portable forest contract for equivalent parses. EL is no
+longer classified as experimental.
 
 [![Swift 5.9+](https://img.shields.io/badge/Swift-5.9%2B-orange.svg)](https://swift.org)  
 [![Platforms](https://img.shields.io/badge/platforms-macOS%2011%20%7C%20iOS%2014-blue.svg)](https://developer.apple.com/swift/)  
@@ -25,7 +25,7 @@ This library implements a fully general context-free parser that handles **any**
 
 The distinguishing features of the algorithm relative to classical Earley are:
 
-- **Pre-computed tables** replace the on-the-fly slot generation of classical Earley, giving practical speedups of 2–3× on large grammars (the paper reports competitive performance with their fastest LR-style general parser).
+- **Pre-computed tables** replace the on-the-fly slot generation of classical Earley. The paper reports competitive performance; performance claims for this Swift implementation are intentionally deferred to reproducible ecosystem benchmarks.
 - **Binary Subtree Representation (BSR)** sets provide a compact, set-based representation of all derivations that can be pre-computed in parts and stored in the table.
 - **SLR(1) and extended lookahead** modes reduce unnecessary work without limiting the class of grammars that can be recognised.
 - **Algorithmic simplicity**: the core of `parseET()` is eight lines of pseudocode (Section 7.3 of the paper).
@@ -127,8 +127,18 @@ let streamedResult = try parser.parse(stream: stream)
 // The traversal mode is immutable for the parser's lifetime.
 let extendedParser = EarleyTableParser(
     grammar: grammar,
-    useExtendedLookahead: true)
+    lookahead: .extended)
 let elTree = try extendedParser.syntaxTree(for: "a a b")
+```
+
+The former `useExtendedLookahead: Bool` initializer and property remain
+source-compatible. New code should use `EarleyTableLookahead.simple` or
+`.extended`, which makes experiment configurations self-describing.
+
+The command-line product accepts the same choice explicitly:
+
+```bash
+earley-parse grammar.bnf --start S --lookahead extended --input "a a b"
 ```
 
 ---
@@ -173,7 +183,7 @@ the nonterminal `S`, and a literal `"$"` is distinct from synthetic EOF.
 Pattern terminals (regex, character range, and string list) are matched by
 `key(forToken:)`; an exact literal terminal takes precedence over a pattern.
 
-### EL Parse Table — `𝒯_Γ^EL` *(new in this revision)*
+### EL Parse Table — `𝒯_Γ^EL`
 
 The extended-lookahead table replaces the per-(state,symbol) `A_{p,x}` with two **per-state** sets (Section 7.2–7.3):
 
@@ -202,9 +212,8 @@ recET(𝒯_Γ, a₁…aₙ):
   for j = 0 to n:
     while Rⱼ ≠ ∅:
       (p,k) ← remove from Rⱼ
-      if k ≠ j:                                       // completer
-        for X ∈ A_{p, aⱼ₊₁}:
-          for (h,i) ∈ 𝔼ₖ: ADD(h, X, i, j)
+      for X ∈ A_{p, aⱼ₊₁}:                           // completer
+        for (h,i) ∈ 𝔼ₖ: ADD(h, X, i, j)
       ADD(p, ε, j, j)                                 // ε-transition
       if j < n: ADD(p, aⱼ₊₁, k, j+1)                // scanner
   accept iff (p,0) ∈ 𝔼ₙ for some accepting p
@@ -214,7 +223,7 @@ recET(𝒯_Γ, a₁…aₙ):
 
 Extends `recET()` with BSR construction. `ADD(p, x, i, k, j)` reads `χ₁`/`χ₂` from the SL table and inserts `BSR` elements into Υ before updating the Earley sets.
 
-### `parseET()` — EL Parser (Section 7.3) *(new in this revision)*
+### `parseET()` — EL Parser (Section 7.3)
 
 Same control flow as `simpleET()` but uses the EL table and replaces `A_{p, aⱼ₊₁}` with `rLHS(p)` guarded by `aⱼ₊₁ ∈ SELECT(p)`. The scanner is similarly guarded:
 
@@ -224,7 +233,7 @@ parseET(𝒯_Γ^EL, SELECT, rLHS, a₁…aₙ):
   for j = 0 to n:
     while Rⱼ ≠ ∅:
       (p,k) ← remove from Rⱼ
-      if k ≠ j and aⱼ₊₁ ∈ SELECT(p):               // EL completer guard
+      if aⱼ₊₁ ∈ SELECT(p):                         // EL completer guard
         for Y ∈ rLHS(p):
           for (h,i) ∈ 𝔼ₖ: ADD(h, Y, i, k, j)
       ADD(p, ε, j, j, j)                             // ε-transition
@@ -245,8 +254,10 @@ public final class EarleyTableParser {
     public let nfa:      EarleyNFA
     public let slTable:  SLParseTable
     public let elTable:  ELParseTable
-    public let useExtendedLookahead: Bool   // immutable; default: false
-    public init(grammar: Grammar, useExtendedLookahead: Bool = false)
+    public let lookahead: EarleyTableLookahead
+    public var useExtendedLookahead: Bool { get }   // compatibility view
+    public init(grammar: Grammar, lookahead: EarleyTableLookahead = .simple)
+    public convenience init(grammar: Grammar, useExtendedLookahead: Bool)
 
     // Core method (both SL and EL route through here)
     public func parse(tokens: [String]) throws -> ParseResult<NodeLabel>
@@ -326,9 +337,9 @@ The following bugs were corrected in this revision:
 **4. `reconstructChildren` for multi-symbol productions** — Previously returned a bare extent string `"[i…j via k]"` instead of recursing into the BSR set. Replaced with a proper recursive binary descent that handles every production shape.
 
 **5. `EarleyTableParser.init` table selection** — Both tables are built at
-initialization and `useExtendedLookahead` selects the traversal for the
-lifetime of that parser. The immutable selection prevents a shared parser
-from changing behaviour between calls.
+initialization and `lookahead` selects the traversal for the lifetime of that
+parser. The immutable selection prevents a shared parser from changing
+behaviour between calls.
 
 **6. `EarleyTableParser.parse(tokens:)` unimplemented** — The method dispatches to `simpleET` or `parseET`, builds the SPPF, and returns `ParseResult<NodeLabel>`.
 
@@ -342,8 +353,35 @@ from changing behaviour between calls.
 
 - **Extended-lookahead parser `parseET()`** — the `parseET()` function and the
   `ELParseTable` / `ELStateInfo` / `ELTableEntry` types. Select it with
-  `EarleyTableParser(grammar: grammar, useExtendedLookahead: true)`. It uses
+  `EarleyTableParser(grammar: grammar, lookahead: .extended)`. It uses
   `SELECT(p)` and `rLHS(p)` per state instead of the FOLLOW-based `A_{p,x}`.
+
+- **Typed lookahead selection** — `EarleyTableLookahead` replaces Boolean mode
+  selection for new clients while retaining the original initializer as a
+  compatibility API.
+
+- **Authoritative FIRST computation** — EL table construction reuses Grammar's
+  fixed-point FIRST/FOLLOW analysis. This removes the former state-local DFS,
+  including its sensitivity to recursive paths, and computes the analysis only
+  once per table.
+
+## Correctness and stabilization evidence
+
+The `EarleyTableConformanceTests` suite provides a test-only classical Earley
+recognizer that is independent of the table NFA, SELECT sets, and traversal.
+It checks 64 systematically composed grammars over every `{a,b}` input through
+length three, reporting the first length-ordered mismatch as a bounded minimal
+counterexample. Dedicated cases cover indirect nullable starts and hidden left
+recursion through length four.
+
+For accepted inputs, SL and EL must also export identical
+`ParseForestSnapshot` values. Snapshot construction enforces the Parser
+contract's root, identity, and extent invariants. Repeated construction and
+production-order reversal verify deterministic acceptance and BSR output.
+
+These are bounded executable claims, not a proof for every context-free
+grammar. New discrepancies should be retained as minimized regression cases
+before extending the bound or making performance comparisons.
 
 - **Typed table columns** — recogniser, SL, EL, and `SELECT` lookups use
   `TableKey`, keeping terminals, nonterminals, epsilon, and EOF separate even
@@ -359,7 +397,7 @@ from changing behaviour between calls.
 
 ## Test Coverage
 
-Five suites, 84 test cases (Swift Testing):
+Six suites, 91 test cases (Swift Testing):
 
 | Suite | What it covers |
 |---|---|
@@ -368,6 +406,7 @@ Five suites, 84 test cases (Swift Testing):
 | `AdditionalTests` (existing) | Core detection, Graphviz export, extendable nodes |
 | `ELParserTests` *(new)* | `parseET` acceptance, BSR quality, ambiguity, EL table structure, three-way consistency |
 | `EarleyTableParserFacadeTests` *(new)* | `recognizes`, `syntaxTree`, `parse`, `allSyntaxTrees`, SL/EL agreement, `parse(tokens:)` |
+| `EarleyTableConformanceTests` | independent-oracle differential recognition, minimized regressions, forest parity, determinism, production-order invariance |
 
 Run with:
 

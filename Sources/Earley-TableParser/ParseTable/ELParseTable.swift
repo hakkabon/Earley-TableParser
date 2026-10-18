@@ -94,7 +94,7 @@ public struct ELParseTable {
 // MARK: - EL Table Builder
 
 public func buildELParseTable(nfa: EarleyNFA, grammar: Grammar) -> ELParseTable {
-    let follow     = grammar.followSets()
+    let (first, follow) = grammar.firstAndFollow()
     let epsilonSym = Symbol.terminal(Terminal.meta(.eps))
 
     // ── Step 1: Compute SELECT(p) and rLHS(p) for every NFA state ─────────
@@ -117,8 +117,12 @@ public func buildELParseTable(nfa: EarleyNFA, grammar: Grammar) -> ELParseTable 
                 }
             } else {
                 // Partial item: FIRST of the remaining suffix feeds into SELECT.
-                sel.formUnion(firstTerminalKeys(of: slot.suffix, grammar: grammar, follow: follow,
-                                               goal: slot.production.goal))
+                sel.formUnion(firstTerminalKeys(
+                    of: slot.suffix,
+                    grammar: grammar,
+                    first: first,
+                    follow: follow,
+                    goal: slot.production.goal))
             }
         }
         stateInfos[p] = ELStateInfo(selectSet: sel, rLHS: rlhs)
@@ -249,29 +253,21 @@ private func terminalTableKey(from symbol: Symbol) -> TableKey? {
 private func firstTerminalKeys(
     of syms: [Symbol],
     grammar: Grammar,
+    first: [Symbol: Set<Symbol>],
     follow: [NonTerminal: Set<Symbol>],
     goal: NonTerminal
 ) -> Set<TableKey> {
-    var result = Set<TableKey>()
-    var allNullable = true
-    var visited: Set<NonTerminal> = Set()
+    // Grammar owns nullable/FIRST computation. Reuse one fixed-point table for
+    // every NFA state rather than performing a state-local recursive walk.
+    // This preserves terminals reached through mutually recursive symbols and
+    // keeps table construction proportional to the grammar and NFA sizes.
+    let sequenceFirst = grammar.first(of: syms, using: first)
+    var result = Set(sequenceFirst.compactMap { symbol -> TableKey? in
+        guard !isEpsilonSymbol(symbol) else { return nil }
+        return terminalTableKey(from: symbol)
+    })
 
-    for sym in syms {
-        switch sym {
-        case .terminal(let t):
-            if !t.isEmpty { result.insert(tableKey(for: t)) }
-            allNullable = false
-        case .nonTerminal(let nt):
-            // Add all terminals that can start a derivation of nt.
-            result.formUnion(firstOfNT(nt, grammar: grammar, visited: &visited))
-            if !grammar.isNullable(nt) { allNullable = false }
-        case .metaSymbol:
-            allNullable = false
-        }
-        if !allNullable { break }
-    }
-
-    if allNullable {
+    if sequenceFirst.contains(.terminal(.meta(.eps))) {
         for sym in follow[goal] ?? [] {
             if let key = terminalTableKey(from: sym) {
                 result.insert(key)
@@ -279,44 +275,4 @@ private func firstTerminalKeys(
         }
     }
     return result
-}
-
-/// Iterative FIRST terminals of a nonterminal (cycle-safe).
-private func firstOfNT(
-    _ nt: NonTerminal,
-    grammar: Grammar,
-    visited: inout Set<NonTerminal>
-) -> Set<TableKey> {
-    guard visited.insert(nt).inserted else { return [] }
-    var result = Set<TableKey>()
-    for prod in grammar.productions where prod.goal == nt {
-        for sym in prod.rule {
-            switch sym {
-            case .terminal(let t):
-                if !t.isEmpty { result.insert(tableKey(for: t)) }
-                break   // stop at first non-nullable
-            case .nonTerminal(let inner):
-                result.formUnion(firstOfNT(inner, grammar: grammar, visited: &visited))
-                if !grammar.isNullable(inner) { break }
-            case .metaSymbol:
-                break
-            }
-        }
-    }
-    return result
-}
-
-// MARK: - Grammar.isNullable([Symbol]) helper
-
-extension Grammar {
-    /// True when a sequence of symbols can collectively derive ε.
-    func isNullable(_ syms: [Symbol]) -> Bool {
-        syms.allSatisfy { sym in
-            switch sym {
-            case .terminal(let t):     return t.isEmpty
-            case .nonTerminal(let nt): return isNullable(nt)
-            case .metaSymbol:          return false
-            }
-        }
-    }
 }

@@ -16,7 +16,7 @@ struct GrammarTool: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "gtool",
         abstract: "A utility for analyzing BNF grammars.",
-        version: "0.0.1",
+        version: "0.2.0",
         subcommands: [
             Parse.self
         ],

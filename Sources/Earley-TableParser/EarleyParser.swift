@@ -28,8 +28,8 @@
 //    the BSR set. Replaced with a proper recursive binary descent that
 //    handles every production shape.
 //
-// 5. EarleyTableParser.init – always builds both tables. The immutable
-//    useExtendedLookahead setting chooses the traversal for this instance.
+// 5. EarleyTableParser.init – always builds both tables. The immutable typed
+//    lookahead setting chooses the traversal for this instance.
 //
 // 6. EarleyTableParser.parse(tokens:) – was never implemented (empty body).
 //    Implemented: runs simpleET or parseET, builds SPPF, wraps as ParseResult.
@@ -336,6 +336,16 @@ private func symbolStr(
 
 // MARK: - EarleyTableParser public facade
 
+/// The lookahead strategy used by ``EarleyTableParser``.
+///
+/// Both modes recognize the full context-free language. `extended` narrows
+/// scanner and completer work through the EL table's per-state SELECT set; it
+/// is a performance strategy, not a grammar-class restriction.
+public enum EarleyTableLookahead: String, CaseIterable, Codable, Sendable {
+    case simple
+    case extended
+}
+
 /// A fully general context-free parser built from the Earley Table Traversing
 /// algorithm of Scott & Johnstone (SCP 247, 2026).
 ///
@@ -352,11 +362,14 @@ public final class EarleyTableParser {
     public let slTable:  SLParseTable
     public let elTable:  ELParseTable
 
-    /// Selects the extended-lookahead (EL) traversal instead of the
-    /// simple-lookahead (SL) traversal. The selection is fixed when the
-    /// parser is constructed, so a parser instance cannot change behaviour
-    /// while it is being shared or used by concurrent clients.
-    public let useExtendedLookahead: Bool
+    /// The traversal strategy fixed for this parser's lifetime.
+    public let lookahead: EarleyTableLookahead
+
+    /// Compatibility view of ``lookahead``.
+    ///
+    /// Prefer ``lookahead`` in new code. This property remains available so
+    /// existing clients do not need a source migration for the 0.2 release.
+    public var useExtendedLookahead: Bool { lookahead == .extended }
 
     // MARK: - Init
 
@@ -364,14 +377,23 @@ public final class EarleyTableParser {
     ///
     /// - Parameters:
     ///   - grammar: The grammar to precompute.
-    ///   - useExtendedLookahead: `true` selects EL traversal; `false` selects
-    ///     SL traversal. The default is `false`.
-    public init(grammar: Grammar, useExtendedLookahead: Bool = false) {
+    ///   - lookahead: The table traversal strategy. The default is `.simple`.
+    public init(
+        grammar: Grammar,
+        lookahead: EarleyTableLookahead = .simple
+    ) {
         self.grammar              = grammar
         self.nfa                  = buildEarleyNFA(grammar: grammar)
         self.slTable              = buildSLParseTable(nfa: nfa, grammar: grammar)
         self.elTable              = buildELParseTable(nfa: nfa, grammar: grammar)
-        self.useExtendedLookahead = useExtendedLookahead
+        self.lookahead            = lookahead
+    }
+
+    /// Compatibility initializer for the original Boolean mode selection.
+    public convenience init(grammar: Grammar, useExtendedLookahead: Bool) {
+        self.init(
+            grammar: grammar,
+            lookahead: useExtendedLookahead ? .extended : .simple)
     }
 
     // MARK: - Core parse
@@ -501,7 +523,7 @@ extension EarleyTableParser {
     }
 
     private func traverse(_ tokens: [String]) -> TableTraversalResult {
-        if useExtendedLookahead {
+        if lookahead == .extended {
             return parseET(table: elTable, input: tokens)
         }
         return simpleET(table: slTable, input: tokens)

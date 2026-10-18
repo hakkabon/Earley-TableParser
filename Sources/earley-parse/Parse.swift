@@ -28,6 +28,9 @@ extension GrammarTool {
         
         @Option(name: [.long, .short], help: "Use { tree | graph | sppf } to display result of parse.")
         var analysis: Analysis = .tree
+
+        @Option(name: .long, help: "Table lookahead strategy: simple or extended.")
+        var lookahead: LookaheadMode = .simple
         
         mutating func run() throws {
             
@@ -41,7 +44,9 @@ extension GrammarTool {
                 try Grammar(bnf: try String(contentsOf: options.grammar), start: options.start)
             }
             
-            let parser = EarleyTableParser(grammar: grammar)
+            let parser = EarleyTableParser(
+                grammar: grammar,
+                lookahead: lookahead.parserValue)
             
             switch input {
             case .arg(let inputString): // String input

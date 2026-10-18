@@ -8,6 +8,7 @@
 
 import Foundation
 import ArgumentParser
+import Earley_TableParser
 
 /// Notation is either one of { bnf | ebnf | gen | wsn } or a
 /// custom format using `custom(String)`.
@@ -41,6 +42,19 @@ enum Method: String, ExpressibleByArgument, CaseIterable {
 /// Parsing method to be applied to input supplied by user.
 enum Analysis: String, ExpressibleByArgument, CaseIterable {
     case tree, trees, graph, sppf
+}
+
+/// Earley table traversal selected for this invocation.
+enum LookaheadMode: String, ExpressibleByArgument, CaseIterable {
+    case simple
+    case extended
+
+    var parserValue: EarleyTableLookahead {
+        switch self {
+        case .simple: .simple
+        case .extended: .extended
+        }
+    }
 }
 
 /// Source input is either a command line argument or a file containing the input to be parsed.
