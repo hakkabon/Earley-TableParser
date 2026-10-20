@@ -9,6 +9,7 @@ let package = Package(
     products: [
         .library(name: "Earley-TableParser", targets: ["Earley-TableParser"]),
         .executable(name: "earley-parse", targets: ["earley-parse"]),
+        .executable(name: "earley-table-microbenchmark", targets: ["earley-table-microbenchmark"]),
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.6.2"),
@@ -17,7 +18,7 @@ let package = Package(
         .package(url: "https://github.com/hakkabon/Lexer.git", .upToNextMinor(from: "0.2.0")),
         .package(url: "https://github.com/hakkabon/GrammarDiagram.git", .upToNextMinor(from: "0.1.0")),
         .package(url: "https://github.com/hakkabon/TerminalColors.git", .upToNextMinor(from: "0.1.0")),
-        .package(url: "https://github.com/hakkabon/Parser.git", .upToNextMinor(from: "0.3.0")),
+        .package(url: "https://github.com/hakkabon/Parser.git", .upToNextMinor(from: "0.4.1")),
     ],
     targets: [
         .target(
@@ -39,6 +40,13 @@ let package = Package(
             ]
         ),
         // Move executable target to its destination (grammar toolbox) when library confirmed working.
+        .executableTarget(
+            name: "earley-table-microbenchmark",
+            dependencies: [
+                "Earley-TableParser",
+                .product(name: "Parser", package: "Parser"),
+            ]
+        ),
         .executableTarget(
             name: "earley-parse",
             dependencies: [

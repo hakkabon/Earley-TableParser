@@ -13,6 +13,10 @@ Earley oracle. Simple (SL) and extended (EL) lookahead export the same shared,
 production-identified portable forest contract for equivalent parses. EL is no
 longer classified as experimental.
 
+Release 0.2.1 adds engine-owned workloads for both stabilized modes. Run
+`swift run -c release earley-table-microbenchmark simple [report.json]` or
+replace `simple` with `extended`; each mode retains a distinct suite identity.
+
 [![Swift 5.9+](https://img.shields.io/badge/Swift-5.9%2B-orange.svg)](https://swift.org)  
 [![Platforms](https://img.shields.io/badge/platforms-macOS%2011%20%7C%20iOS%2014-blue.svg)](https://developer.apple.com/swift/)  
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)  
